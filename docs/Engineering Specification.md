@@ -1,759 +1,899 @@
-# Redactify - Engineering Specification & Implementation Plan
+# RedactifAI - Revised Engineering Specification
 
-**Make it so.**
-
----
-
-## Project Overview
-
-**Name:** Redactify  
-**Tagline:** Open-source medical document de-identification service  
-**License:** MIT  
-**Language:** Python 3.11+  
-**Dependency Management:** Poetry
-
-**What it does:** Accepts TIFF medical records via REST API, detects and masks PHI using Azure Document Intelligence, returns sanitized TIFF asynchronously.
+**Make it so. (Version 2.0 - Core Logic First)**
 
 ---
 
-## Architecture
+## Executive Summary
+
+**What Changed:** Original spec assumed Azure Document Intelligence had built-in PII detection. **It doesn't.** OCR and PHI detection are separate services. This spec reflects that reality and focuses on the **critical 16-hour path**: building the entity-to-bounding-box matching logic that makes this project valuable.
+
+**The Core Challenge:** Converting "Samuel Grummons had a vasectomy" → "█████████████████ had a vasectomy" requires:
+1. OCR service: Extract "Samuel Grummons" with pixel coordinates
+2. PHI detection service: Identify "Samuel Grummons" as a Person entity at character offset 0-15
+3. **Entity matching (THE HARD PART)**: Map character offset 0-15 back to pixel coordinates
+4. Image masking: Draw black rectangle over those pixels
+
+**This spec prioritizes building #3 first**, with mocks for everything else. Once that works, adding real services is straightforward.
+
+---
+
+## Architecture Overview
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                         API Layer (FastAPI)                     │
-│  POST /jobs          - Submit TIFF for processing              │
+│  POST /jobs          - Submit document for processing           │
 │  GET  /jobs/{id}     - Get job status                          │
-│  GET  /jobs/{id}/result - Download masked TIFF                 │
-│  GET  /health        - Health check                            │
-└────────────────┬────────────────────────────────────────────────┘
-                 │
-                 ↓
-┌─────────────────────────────────────────────────────────────────┐
-│                    Job Queue (Celery + Redis)                   │
-│  - Enqueue de-identification tasks                             │
-│  - Track job state (pending/processing/complete/failed)        │
+│  GET  /jobs/{id}/result - Download masked document             │
 └────────────────┬────────────────────────────────────────────────┘
                  │
                  ↓
 ┌─────────────────────────────────────────────────────────────────┐
 │                    Celery Worker Process                        │
-│  1. Fetch job from queue                                       │
-│  2. Download input TIFF from storage                           │
-│  3. Call DeidentificationService                               │
-│  4. Upload masked TIFF to storage                              │
-│  5. Update job status in database                              │
+│  1. Download document from storage                             │
+│  2. Split into pages (ImageProcessor)                          │
+│  3. OCR each page → text + bounding boxes                      │
+│  4. Detect PHI entities → character offsets                    │
+│  5. Match entities to bounding boxes (CORE LOGIC)              │
+│  6. Mask bounding boxes                                        │
+│  7. Reassemble and upload                                      │
 └────────────────┬────────────────────────────────────────────────┘
                  │
                  ↓
 ┌─────────────────────────────────────────────────────────────────┐
 │              DeidentificationService (Orchestrator)             │
-│  - Load TIFF                                                   │
-│  - Call OCR service                                            │
-│  - Call PHI detection service                                  │
-│  - Call masking service                                        │
-│  - Return masked TIFF + metadata                               │
-└─────────┬──────────────┬──────────────┬────────────────────────┘
-          │              │              │
-          ↓              ↓              ↓
-    ┌─────────┐    ┌──────────┐   ┌──────────┐
-    │   OCR   │    │   PHI    │   │  Masking │
-    │ Service │    │Detection │   │  Service │
-    │         │    │ Service  │   │          │
-    │ Azure   │    │Azure+    │   │ Pillow   │
-    │Doc Intel│    │ Regex    │   │          │
-    └─────────┘    └──────────┘   └──────────┘
+└─────────┬──────────────┬──────────────┬──────────────┬─────────┘
+          │              │              │              │
+          ↓              ↓              ↓              ↓
+    ┌──────────┐   ┌──────────┐   ┌──────────┐   ┌──────────┐
+    │   OCR    │   │   PHI    │   │  Entity  │   │  Image   │
+    │ Service  │   │Detection │   │ Matcher  │   │ Masking  │
+    │(Abstract)│   │ Service  │   │  (Core)  │   │ Service  │
+    │          │   │(Abstract)│   │          │   │          │
+    └──────────┘   └──────────┘   └──────────┘   └──────────┘
+         │              │
+         ↓              ↓
+    Azure/AWS      Azure/AWS
+    Textract       Language
+```
+
+**Key Design Principles:**
+1. **Cloud-agnostic:** OCR and PHI services are abstracted
+2. **Mock-first:** Build with mocks, add real services later
+3. **Core logic first:** EntityMatcher is the critical path
+4. **HIPAA-compliant:** Configurable masking levels
+
+---
+
+## Critical Path: Entity-to-Bounding-Box Matching
+
+This is the **16-hour priority**. Everything else can be mocked.
+
+### Problem Statement
+
+**Input 1 - OCR Results:**
+```python
+OCRResult(
+    pages=[
+        OCRPage(
+            page_number=1,
+            width=2550.0,  # pixels
+            height=3300.0,
+            words=[
+                OCRWord(text="Samuel", confidence=0.99, 
+                       bounding_box=BoundingBox(page=1, x=145, y=220, width=85, height=24)),
+                OCRWord(text="Grummons", confidence=0.98,
+                       bounding_box=BoundingBox(page=1, x=235, y=220, width=110, height=24)),
+                OCRWord(text="had", confidence=0.99,
+                       bounding_box=BoundingBox(page=1, x=350, y=220, width=40, height=24)),
+                # ... more words
+            ]
+        )
+    ],
+    full_text="Samuel Grummons had a vasectomy on 03/15/2023..."
+)
+```
+
+**Input 2 - PHI Entities:**
+```python
+phi_entities = [
+    PHIEntity(
+        text="Samuel Grummons",
+        category="Person",
+        offset=0,        # Character offset in full_text
+        length=15,
+        confidence=0.95
+    ),
+    PHIEntity(
+        text="03/15/2023",
+        category="Date",
+        offset=32,
+        length=10,
+        confidence=0.98
+    )
+]
+```
+
+**Output - Mask Regions:**
+```python
+mask_regions = [
+    MaskRegion(
+        page=1,
+        bounding_box=BoundingBox(page=1, x=145, y=220, width=195, height=24),
+        entity_category="Person",
+        confidence=0.95
+    ),
+    MaskRegion(
+        page=1,
+        bounding_box=BoundingBox(page=1, x=420, y=220, width=120, height=24),
+        entity_category="Date",
+        confidence=0.98
+    )
+]
+```
+
+### Core Algorithm
+
+```python
+class EntityMatcher:
+    """
+    Maps PHI entities (character offsets) to OCR word bounding boxes.
+    
+    This is the core value proposition of RedactifAI.
+    """
+    
+    def match_entities_to_boxes(
+        self, 
+        ocr_result: OCRResult, 
+        phi_entities: List[PHIEntity]
+    ) -> List[MaskRegion]:
+        """
+        Match PHI entities to bounding boxes for masking.
+        
+        Algorithm:
+        1. Build character offset index from OCR words
+        2. For each PHI entity, find overlapping OCR words
+        3. Merge their bounding boxes into a single mask region
+        4. Handle edge cases (OCR errors, multi-line text, page boundaries)
+        """
+        offset_map = self._build_offset_map(ocr_result)
+        mask_regions = []
+        
+        for entity in phi_entities:
+            overlapping_words = self._find_overlapping_words(
+                entity, offset_map
+            )
+            
+            if overlapping_words:
+                merged_box = self._merge_bounding_boxes(overlapping_words)
+                mask_regions.append(MaskRegion(
+                    page=overlapping_words[0].page,
+                    bounding_box=merged_box,
+                    entity_category=entity.category,
+                    confidence=entity.confidence
+                ))
+            else:
+                # Entity not found in OCR - log warning
+                logger.warning(
+                    f"Could not match entity '{entity.text}' to OCR words"
+                )
+        
+        return mask_regions
+    
+    def _build_offset_map(self, ocr_result: OCRResult) -> List[WordOffset]:
+        """
+        Build index mapping character offsets to OCR words.
+        
+        Handles:
+        - Space normalization (OCR might have extra/missing spaces)
+        - Line breaks
+        - Page boundaries
+        """
+        # Implementation details below
+    
+    def _find_overlapping_words(
+        self, 
+        entity: PHIEntity, 
+        offset_map: List[WordOffset]
+    ) -> List[WordOffset]:
+        """
+        Find OCR words that overlap with entity character range.
+        
+        Uses fuzzy matching if exact match fails (handles OCR errors).
+        """
+        # Implementation details below
+    
+    def _merge_bounding_boxes(
+        self, 
+        words: List[WordOffset]
+    ) -> BoundingBox:
+        """
+        Merge multiple word boxes into single bounding box.
+        
+        Takes min(x, y) and max(x+width, y+height) across all words.
+        """
+        # Implementation details below
+```
+
+### Edge Cases to Handle
+
+| Edge Case | Example | Solution |
+|-----------|---------|----------|
+| **OCR errors** | Entity: "Samuel", OCR: "5amuel" | Fuzzy string matching (Levenshtein distance ≤ 2) |
+| **Multi-line entities** | Address spanning 2 lines | Track line breaks in offset calculation |
+| **Page boundaries** | Entity spans pages | Split into multiple mask regions |
+| **Overlapping entities** | "Dr. Smith" (Person) + "Dr." (Title) | Merge overlapping regions or keep larger one |
+| **Whitespace mismatch** | Entity: "John  Smith" (2 spaces), OCR: "John Smith" (1 space) | Normalize whitespace when building offset map |
+| **Missing entities** | PHI service found it, but OCR missed the word | Log warning, skip masking (or expand search radius) |
+| **Confidence threshold** | Low-confidence entity | Only mask if confidence > threshold (configurable) |
+
+---
+
+## Domain Models
+
+### Core Data Structures
+
+```python
+# src/models/domain.py
+
+from dataclasses import dataclass
+from typing import List, Optional
+from enum import Enum
+
+
+@dataclass
+class BoundingBox:
+    """
+    Bounding box in pixel coordinates.
+    Normalized to page dimensions (0-1 relative coordinates optional).
+    """
+    page: int
+    x: float      # Left edge (pixels)
+    y: float      # Top edge (pixels)
+    width: float  # Width (pixels)
+    height: float # Height (pixels)
+
+
+@dataclass
+class OCRWord:
+    """Single word extracted by OCR with location."""
+    text: str
+    confidence: float
+    bounding_box: BoundingBox
+
+
+@dataclass
+class OCRLine:
+    """Line of text with constituent words."""
+    text: str
+    words: List[OCRWord]
+    bounding_box: BoundingBox
+
+
+@dataclass
+class OCRPage:
+    """Single page OCR results."""
+    page_number: int
+    width: float   # Page width in pixels
+    height: float  # Page height in pixels
+    lines: List[OCRLine]
+    words: List[OCRWord]
+
+
+@dataclass
+class OCRResult:
+    """Complete OCR results for entire document."""
+    pages: List[OCRPage]
+    full_text: str  # All text concatenated with spaces/newlines
+
+
+@dataclass
+class PHIEntity:
+    """PHI entity detected by ML service."""
+    text: str
+    category: str           # Person, Date, SSN, Address, etc.
+    offset: int             # Character offset in full_text
+    length: int             # Character length
+    confidence: float       # 0.0-1.0
+    subcategory: Optional[str] = None  # e.g., "FirstName", "LastName"
+
+
+@dataclass
+class MaskRegion:
+    """Region to mask in the image."""
+    page: int
+    bounding_box: BoundingBox
+    entity_category: str
+    confidence: float
+
+
+class MaskingLevel(str, Enum):
+    """HIPAA compliance levels for masking."""
+    SAFE_HARBOR = "safe_harbor"         # Mask ALL identifiers (18 HIPAA categories)
+    LIMITED_DATASET = "limited_dataset" # Mask patient identifiers, keep provider names
+    CUSTOM = "custom"                   # User-defined categories to mask
+
+
+@dataclass
+class DeidentificationResult:
+    """Result of document de-identification."""
+    status: str  # "success" or "failure"
+    masked_image_bytes: bytes
+    pages_processed: int
+    phi_entities_count: int
+    phi_entities: List[PHIEntity]
+    mask_regions: List[MaskRegion]
+    processing_time_ms: float
+    errors: List[str]
 ```
 
 ---
 
-## Component Specifications
+## Service Abstractions
 
-### 1. Storage Abstraction
-
-**File:** `redactify/storage/base.py`
+### OCR Service Interface
 
 ```python
+# src/services/ocr_service.py
+
 from abc import ABC, abstractmethod
-from typing import Optional
+from src.models.domain import OCRResult
 
 
-class StorageBackend(ABC):
-    """Abstract base class for storage backends."""
+class OCRService(ABC):
+    """Abstract base class for OCR providers."""
     
     @abstractmethod
-    async def upload(self, key: str, data: bytes, content_type: str = "image/tiff") -> str:
+    async def analyze_document(
+        self, 
+        document_bytes: bytes,
+        file_format: str = "tiff"
+    ) -> OCRResult:
         """
-        Upload data to storage.
+        Extract text and bounding boxes from document.
         
         Args:
-            key: Storage key/path
-            data: Bytes to upload
-            content_type: MIME type
+            document_bytes: Raw document bytes
+            file_format: Document format (tiff, pdf, png, etc.)
             
         Returns:
-            Storage key (may be different from input if backend modifies it)
-        """
-        pass
-    
-    @abstractmethod
-    async def download(self, key: str) -> bytes:
-        """
-        Download data from storage.
-        
-        Args:
-            key: Storage key/path
-            
-        Returns:
-            File bytes
+            OCRResult with normalized structure
             
         Raises:
-            FileNotFoundError: If key doesn't exist
+            OCRServiceError: If OCR fails
         """
-        pass
-    
-    @abstractmethod
-    async def exists(self, key: str) -> bool:
-        """Check if key exists in storage."""
-        pass
-    
-    @abstractmethod
-    async def delete(self, key: str) -> None:
-        """Delete key from storage."""
         pass
 ```
 
 **Implementations:**
+- `MockOCRService` - Returns fake but realistic data for testing
+- `AzureDocumentIntelligenceOCR` - Real Azure implementation
+- `AWSTextractOCR` - Real AWS implementation (future)
 
-1. `redactify/storage/s3.py` - S3/MinIO via boto3
-2. `redactify/storage/azure_blob.py` - Azure Blob via azure-storage-blob
-3. `redactify/storage/local.py` - Local filesystem (dev only)
-
-**Configuration (environment variables):**
-```bash
-STORAGE_BACKEND=s3  # s3 | azure | local
-S3_ENDPOINT_URL=http://localhost:9000  # For MinIO
-S3_BUCKET=redactify
-S3_ACCESS_KEY=minioadmin
-S3_SECRET_KEY=minioadmin
-S3_REGION=us-east-1
-
-AZURE_STORAGE_CONNECTION_STRING=...  # For Azurite or production
-AZURE_STORAGE_CONTAINER=redactify
-
-LOCAL_STORAGE_PATH=/tmp/redactify  # For local development
-```
-
----
-
-### 2. Database Abstraction
-
-**File:** `redactify/db/models.py`
+### PHI Detection Service Interface
 
 ```python
-from sqlalchemy import String, Text, Integer, Float, DateTime, Enum
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
-from datetime import datetime
-import enum
+# src/services/phi_detection_service.py
+
+from abc import ABC, abstractmethod
+from typing import List
+from src.models.domain import PHIEntity
 
 
-class Base(DeclarativeBase):
-    pass
-
-
-class JobStatus(enum.Enum):
-    PENDING = "pending"
-    PROCESSING = "processing"
-    COMPLETE = "complete"
-    FAILED = "failed"
-
-
-class Job(Base):
-    __tablename__ = "jobs"
+class PHIDetectionService(ABC):
+    """Abstract base class for PHI/PII detection providers."""
     
-    id: Mapped[str] = mapped_column(String(36), primary_key=True)  # UUID
-    status: Mapped[JobStatus] = mapped_column(Enum(JobStatus), default=JobStatus.PENDING)
-    
-    # Storage keys
-    input_key: Mapped[str] = mapped_column(String(512))
-    output_key: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
-    
-    # Metadata
-    pages_processed: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
-    phi_entities_masked: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
-    processing_time_ms: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    
-    # Error tracking
-    error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    retry_count: Mapped[int] = mapped_column(Integer, default=0)
-    
-    # Timestamps
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
-    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
-```
-
-**File:** `redactify/db/session.py`
-
-```python
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
-from redactify.config import settings
-
-# Support both PostgreSQL and SQLite
-if settings.DATABASE_URL.startswith("sqlite"):
-    engine = create_async_engine(
-        settings.DATABASE_URL,
-        connect_args={"check_same_thread": False}
-    )
-else:
-    engine = create_async_engine(settings.DATABASE_URL, pool_pre_ping=True)
-
-AsyncSessionLocal = async_sessionmaker(
-    engine, class_=AsyncSession, expire_on_commit=False
-)
-
-
-async def get_db() -> AsyncSession:
-    async with AsyncSessionLocal() as session:
-        yield session
-```
-
-**Configuration:**
-```bash
-DATABASE_URL=postgresql+asyncpg://user:pass@localhost:5432/redactify
-# OR
-DATABASE_URL=sqlite+aiosqlite:///./redactify.db
-```
-
----
-
-### 3. PHI Pattern Configuration
-
-**File:** `redactify/config/phi_patterns.yaml`
-
-```yaml
-# Medical PHI patterns for regex-based detection
-# These supplement Azure Document Intelligence's built-in PII detection
-
-patterns:
-  - name: MRN
-    regex: '\b(?:MRN|Medical Record (?:Number|#|No\.?))[:\s]*([A-Z0-9]{6,12})\b'
-    flags: IGNORECASE
-    category: MedicalID_MRN
-    
-  - name: AccountNumber
-    regex: '\b(?:Account|Acct\.?) (?:Number|#|No\.?)[:\s]*(\d{6,12})\b'
-    flags: IGNORECASE
-    category: MedicalID_Account
-    
-  - name: MemberID
-    regex: '\b(?:Member|Insurance) ID[:\s]*([A-Z0-9]{8,15})\b'
-    flags: IGNORECASE
-    category: MedicalID_Member
-    
-  - name: SubscriberID
-    regex: '\bSubscriber (?:ID|Number)[:\s]*([A-Z0-9]{8,15})\b'
-    flags: IGNORECASE
-    category: MedicalID_Subscriber
-    
-  - name: SSN_Pattern
-    regex: '\b\d{3}-\d{2}-\d{4}\b'
-    flags: null
-    category: SSN
-
-# Users can add custom patterns here
-# custom_patterns:
-#   - name: MyCustomID
-#     regex: 'CUSTOM-\d{6}'
-#     category: CustomIdentifier
-```
-
-**File:** `redactify/utils/medical_phi_patterns.py`
-
-```python
-import re
-import yaml
-from pathlib import Path
-from typing import List, Tuple
-from dataclasses import dataclass
-
-
-@dataclass
-class PHIPattern:
-    name: str
-    regex: re.Pattern
-    category: str
-
-
-class MedicalPHIPatterns:
-    """Loads and manages PHI regex patterns from config."""
-    
-    def __init__(self, config_path: str = "redactify/config/phi_patterns.yaml"):
-        self.patterns = self._load_patterns(config_path)
-    
-    def _load_patterns(self, config_path: str) -> List[PHIPattern]:
-        path = Path(config_path)
-        if not path.exists():
-            # Return empty list if no custom patterns
-            return []
+    @abstractmethod
+    async def detect_phi(
+        self, 
+        text: str,
+        masking_level: MaskingLevel = MaskingLevel.SAFE_HARBOR
+    ) -> List[PHIEntity]:
+        """
+        Detect PHI entities in text using ML.
         
-        with open(path) as f:
-            config = yaml.safe_load(f)
-        
-        patterns = []
-        for pattern_config in config.get("patterns", []):
-            flags = 0
-            if pattern_config.get("flags") == "IGNORECASE":
-                flags = re.IGNORECASE
+        Args:
+            text: Full text to analyze
+            masking_level: Which entities to detect based on compliance level
             
-            patterns.append(PHIPattern(
-                name=pattern_config["name"],
-                regex=re.compile(pattern_config["regex"], flags),
-                category=pattern_config["category"]
+        Returns:
+            List of PHIEntity with character offsets
+            
+        Raises:
+            PHIDetectionError: If detection fails
+        """
+        pass
+```
+
+**Implementations:**
+- `MockPHIDetectionService` - Returns fake entities for testing
+- `AzureLanguagePHIService` - Real Azure Language PII detection
+- `AWSComprehendMedicalService` - Real AWS Comprehend Medical (future)
+- `LocalNERService` - spaCy/Hugging Face models (future)
+
+---
+
+## HIPAA Safe Harbor Compliance
+
+### 18 Identifiers to Remove
+
+| # | Identifier | PHI Category | Example | Regex Supplement? |
+|---|-----------|--------------|---------|-------------------|
+| 1 | Names | Person, PersonName | "John Smith", "Dr. Jones" | No - use ML |
+| 2 | Geographic subdivisions < state | Address, Location | "123 Main St, Boston" | No - use ML |
+| 3 | Dates (except year) | Date, DateTime | "03/15/2023" | Yes - catch formatted dates |
+| 4 | Phone/Fax | PhoneNumber | "(617) 555-1234" | Yes - regex for formats |
+| 5 | Email | Email | "patient@example.com" | Yes - regex |
+| 6 | SSN | SSN, NationalID | "123-45-6789" | Yes - regex |
+| 7 | Medical record number | MedicalRecordNumber | "MRN: 12345678" | Yes - institution-specific |
+| 8 | Health plan number | InsuranceID | "Member ID: ABC123456" | Yes - institution-specific |
+| 9 | Account number | AccountNumber | "Acct: 987654" | Yes - institution-specific |
+| 10 | Certificate/license number | LicenseNumber | "License: D12345" | Yes - regex |
+| 11 | Vehicle identifiers | VehicleID | "License plate: 1ABC234" | Yes - regex |
+| 12 | Device identifiers | DeviceID | "Serial: XYZ789" | Maybe - depends on format |
+| 13 | URLs | URL | "http://example.com" | Yes - regex |
+| 14 | IP addresses | IPAddress | "192.168.1.1" | Yes - regex |
+| 15 | Biometric identifiers | Biometric | Fingerprints, voice prints | N/A for text |
+| 16 | Full-face photos | Photo | N/A | N/A for text |
+| 17 | Any other unique ID | CustomID | Institution-specific | Yes - configurable |
+| 18 | Other identifying info | Various | Context-dependent | No - use ML |
+
+**Implementation Strategy:**
+1. **ML-based (Azure/AWS):** Names, addresses, dates, phone, email, SSN
+2. **Regex supplement:** Institution-specific IDs (MRN, account, insurance)
+3. **Configurable:** Load custom patterns from `phi_patterns.yaml`
+
+### Masking Levels
+
+```python
+# Configuration via environment variable
+MASKING_LEVEL=safe_harbor  # or limited_dataset or custom
+
+# Behavior:
+# safe_harbor: Mask ALL 18 identifiers including provider names
+#   "Samuel Grummons saw Dr. Smith" → "█████████████████ saw █████████"
+#
+# limited_dataset: Mask patient identifiers, keep provider names
+#   "Samuel Grummons saw Dr. Smith" → "█████████████████ saw Dr. Smith"
+#   Requires data use agreement and IRB approval
+#
+# custom: Mask only specified categories (from config)
+#   PHI_CATEGORIES=Person,SSN,Date
+```
+
+---
+
+## Implementation Plan (16-Hour Critical Path)
+
+### Phase 1: Data Models & EntityMatcher Core (4 hours)
+
+**Deliverable:** Working entity-to-bbox matching with unit tests
+
+**Files:**
+- `src/models/domain.py` - All dataclasses
+- `src/services/entity_matcher.py` - Core matching logic
+- `tests/unit/test_entity_matcher.py` - Comprehensive tests
+
+**Tasks:**
+1. Define all domain models (30 min)
+2. Implement `_build_offset_map()` (1 hour)
+3. Implement `_find_overlapping_words()` with exact matching (1 hour)
+4. Implement `_merge_bounding_boxes()` (30 min)
+5. Write unit tests with clean data (1 hour)
+
+**Success Criteria:**
+- Can map "Samuel Grummons" (offset 0-15) to merged bounding box
+- Handles multi-word entities
+- Tests pass with 90%+ coverage
+
+### Phase 2: Edge Case Handling (4 hours)
+
+**Deliverable:** Robust matching that handles real-world messiness
+
+**Tasks:**
+1. Add fuzzy string matching for OCR errors (1.5 hours)
+   - Use `python-Levenshtein` library
+   - If exact match fails, try Levenshtein distance ≤ 2
+2. Handle whitespace normalization (1 hour)
+   - Normalize spaces when building offset map
+   - Test with documents that have irregular spacing
+3. Handle multi-line entities (1 hour)
+   - Track line breaks in offset calculation
+   - Test with addresses spanning multiple lines
+4. Handle page boundaries (30 min)
+   - Split entities that span pages
+   - Create separate mask regions per page
+
+**Success Criteria:**
+- Handles OCR errors (S→5, O→0, etc.)
+- Works with inconsistent whitespace
+- Correctly masks multi-line addresses
+- Tests cover all edge cases
+
+### Phase 3: Mock Services (3 hours)
+
+**Deliverable:** Fake OCR and PHI services that produce realistic test data
+
+**Files:**
+- `src/services/mock_ocr_service.py`
+- `src/services/mock_phi_detection_service.py`
+- `tests/integration/test_mocked_pipeline.py`
+
+**Tasks:**
+1. Implement `MockOCRService` (1.5 hours)
+   - Load sample text
+   - Generate realistic word bounding boxes
+   - Add some OCR errors (character swaps)
+2. Implement `MockPHIDetectionService` (1 hour)
+   - Use simple regex to find names, dates, SSNs
+   - Return as PHIEntity with offsets
+3. Integration test: Full pipeline with mocks (30 min)
+   - Mock OCR → Mock PHI → EntityMatcher → verify output
+
+**Success Criteria:**
+- Can run full de-identification pipeline without real services
+- Mock data is realistic enough to catch bugs
+- Integration tests pass
+
+### Phase 4: Image Masking & Pipeline (3 hours)
+
+**Deliverable:** End-to-end working system with mocks
+
+**Files:**
+- `src/services/image_masking_service.py`
+- `src/utils/image_processor.py`
+- `src/services/deidentification_service.py`
+
+**Tasks:**
+1. Implement `ImageProcessor` (1 hour)
+   - Load TIFF with Pillow
+   - Split into pages
+   - Reassemble masked pages
+2. Implement `ImageMaskingService` (1 hour)
+   - Take PIL Image + MaskRegion list
+   - Draw black rectangles
+   - Optional: Add padding around boxes
+3. Implement `DeidentificationService` orchestrator (1 hour)
+   - Wire everything together
+   - Error handling and logging
+
+**Success Criteria:**
+- Can load sample TIFF, mask PHI, save result
+- Visual inspection shows correct masking
+- End-to-end test passes
+
+### Phase 5: Configuration & Testing (2 hours)
+
+**Deliverable:** Configurable, production-ready core logic
+
+**Tasks:**
+1. Add configuration system (30 min)
+   - MASKING_LEVEL setting
+   - CONFIDENCE_THRESHOLD setting
+   - PHI_CATEGORIES for custom mode
+2. Add comprehensive integration tests (1 hour)
+   - Test different masking levels
+   - Test confidence thresholds
+   - Test with complex multi-page documents
+3. Performance testing (30 min)
+   - Profile with 50-page document
+   - Ensure acceptable speed (<2s per page)
+
+**Success Criteria:**
+- All tests pass
+- Configuration works as expected
+- Performance is acceptable
+
+---
+
+## Real Service Integration (Post-16 Hours)
+
+Once core logic works, adding real services is straightforward:
+
+### Azure Document Intelligence OCR
+
+```python
+# src/services/azure_ocr_service.py
+
+from azure.ai.formrecognizer import DocumentAnalysisClient
+from azure.core.credentials import AzureKeyCredential
+
+
+class AzureDocumentIntelligenceOCR(OCRService):
+    def __init__(self):
+        self.client = DocumentAnalysisClient(
+            endpoint=settings.AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT,
+            credential=AzureKeyCredential(settings.AZURE_DOCUMENT_INTELLIGENCE_KEY)
+        )
+    
+    async def analyze_document(
+        self, 
+        document_bytes: bytes,
+        file_format: str = "tiff"
+    ) -> OCRResult:
+        # Use prebuilt-read model for OCR
+        poller = self.client.begin_analyze_document(
+            model_id="prebuilt-read",
+            document=document_bytes
+        )
+        result = poller.result()
+        
+        # Convert Azure format to OCRResult
+        return self._convert_azure_result(result)
+    
+    def _convert_azure_result(self, azure_result) -> OCRResult:
+        """Convert Azure's response to normalized OCRResult."""
+        pages = []
+        for page in azure_result.pages:
+            words = []
+            for word in page.words:
+                # Azure returns polygon, convert to bounding box
+                bbox = self._polygon_to_bbox(word.polygon, page.page_number)
+                words.append(OCRWord(
+                    text=word.content,
+                    confidence=word.confidence,
+                    bounding_box=bbox
+                ))
+            
+            pages.append(OCRPage(
+                page_number=page.page_number,
+                width=page.width,
+                height=page.height,
+                words=words,
+                lines=[...]  # Similar conversion
             ))
         
-        return patterns
+        return OCRResult(
+            pages=pages,
+            full_text=azure_result.content
+        )
     
-    def get_patterns(self) -> List[Tuple[str, re.Pattern]]:
-        """Returns list of (name, compiled_regex) tuples."""
-        return [(p.name, p.regex) for p in self.patterns]
+    def _polygon_to_bbox(self, polygon, page) -> BoundingBox:
+        """Convert Azure polygon (8 coordinates) to bounding box."""
+        xs = [polygon[i] for i in range(0, len(polygon), 2)]
+        ys = [polygon[i] for i in range(1, len(polygon), 2)]
+        return BoundingBox(
+            page=page,
+            x=min(xs),
+            y=min(ys),
+            width=max(xs) - min(xs),
+            height=max(ys) - min(ys)
+        )
+```
+
+### Azure Language PII Detection
+
+```python
+# src/services/azure_phi_detection_service.py
+
+from azure.ai.textanalytics import TextAnalyticsClient
+from azure.core.credentials import AzureKeyCredential
+
+
+class AzureLanguagePHIService(PHIDetectionService):
+    def __init__(self):
+        self.client = TextAnalyticsClient(
+            endpoint=settings.AZURE_LANGUAGE_ENDPOINT,
+            credential=AzureKeyCredential(settings.AZURE_LANGUAGE_KEY)
+        )
+    
+    async def detect_phi(
+        self, 
+        text: str,
+        masking_level: MaskingLevel = MaskingLevel.SAFE_HARBOR
+    ) -> List[PHIEntity]:
+        # Call Azure PII detection
+        response = self.client.recognize_pii_entities(
+            documents=[text],
+            domain="phi"  # Healthcare-specific PII
+        )
+        
+        entities = []
+        for doc in response:
+            for entity in doc.entities:
+                # Filter based on masking level
+                if self._should_mask_category(entity.category, masking_level):
+                    entities.append(PHIEntity(
+                        text=entity.text,
+                        category=entity.category,
+                        offset=entity.offset,
+                        length=entity.length,
+                        confidence=entity.confidence_score,
+                        subcategory=entity.subcategory
+                    ))
+        
+        return entities
+    
+    def _should_mask_category(self, category: str, level: MaskingLevel) -> bool:
+        """Determine if category should be masked based on HIPAA level."""
+        if level == MaskingLevel.SAFE_HARBOR:
+            return True  # Mask everything
+        elif level == MaskingLevel.LIMITED_DATASET:
+            # Don't mask provider names
+            return category not in ["HealthcareProfessional", "Organization"]
+        else:
+            # Custom level - check config
+            return category in settings.PHI_CATEGORIES
 ```
 
 ---
 
-### 4. Configuration Management
+## Testing Strategy
 
-**File:** `redactify/config.py`
+### Unit Tests (Mock Everything)
 
 ```python
-from pydantic_settings import BaseSettings, SettingsConfigDict
-from typing import Literal
+# tests/unit/test_entity_matcher.py
+
+def test_simple_entity_matching():
+    """Test matching single-word entity to bounding box."""
+    ocr_result = OCRResult(
+        pages=[OCRPage(
+            page_number=1,
+            width=1000, height=1000,
+            words=[
+                OCRWord(text="John", confidence=0.99, 
+                       bounding_box=BoundingBox(1, 100, 200, 50, 20)),
+                OCRWord(text="Smith", confidence=0.99,
+                       bounding_box=BoundingBox(1, 155, 200, 60, 20))
+            ]
+        )],
+        full_text="John Smith"
+    )
+    
+    entities = [
+        PHIEntity(text="John Smith", category="Person", 
+                 offset=0, length=10, confidence=0.95)
+    ]
+    
+    matcher = EntityMatcher()
+    mask_regions = matcher.match_entities_to_boxes(ocr_result, entities)
+    
+    assert len(mask_regions) == 1
+    assert mask_regions[0].page == 1
+    # Should merge both word boxes
+    assert mask_regions[0].bounding_box.x == 100
+    assert mask_regions[0].bounding_box.width == 115  # 155+60-100
 
 
-class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+def test_ocr_error_fuzzy_matching():
+    """Test fuzzy matching when OCR misreads character."""
+    ocr_result = OCRResult(
+        pages=[OCRPage(
+            page_number=1,
+            words=[
+                OCRWord(text="5amuel", confidence=0.85,  # S→5 error
+                       bounding_box=BoundingBox(1, 100, 200, 70, 20))
+            ]
+        )],
+        full_text="5amuel"
+    )
     
-    # API Settings
-    API_HOST: str = "0.0.0.0"
-    API_PORT: int = 8000
-    API_WORKERS: int = 1
+    entities = [
+        PHIEntity(text="Samuel", category="Person",
+                 offset=0, length=6, confidence=0.95)
+    ]
     
-    # Storage
-    STORAGE_BACKEND: Literal["s3", "azure", "local"] = "s3"
-    S3_ENDPOINT_URL: str = "http://localhost:9000"
-    S3_BUCKET: str = "redactify"
-    S3_ACCESS_KEY: str = "minioadmin"
-    S3_SECRET_KEY: str = "minioadmin"
-    S3_REGION: str = "us-east-1"
-    AZURE_STORAGE_CONNECTION_STRING: str = ""
-    AZURE_STORAGE_CONTAINER: str = "redactify"
-    LOCAL_STORAGE_PATH: str = "/tmp/redactify"
+    matcher = EntityMatcher()
+    mask_regions = matcher.match_entities_to_boxes(ocr_result, entities)
     
-    # Database
-    DATABASE_URL: str = "postgresql+asyncpg://redactify:redactify@localhost:5432/redactify"
-    
-    # Azure Document Intelligence
-    AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT: str
-    AZURE_DOCUMENT_INTELLIGENCE_KEY: str
-    
-    # Celery
-    CELERY_BROKER_URL: str = "redis://localhost:6379/0"
-    CELERY_RESULT_BACKEND: str = "redis://localhost:6379/0"
-    
-    # Processing
-    MAX_FILE_SIZE_MB: int = 50
-    MASKING_PADDING_PX: int = 5
-    MAX_RETRIES: int = 3
-    RETRY_BACKOFF_BASE: float = 2.0  # Exponential backoff base
-    
-    # Logging
-    LOG_LEVEL: str = "INFO"
-    LOG_FORMAT: str = "json"  # json | text
-
-
-settings = Settings()
+    # Should still match despite OCR error
+    assert len(mask_regions) == 1
+    assert mask_regions[0].entity_category == "Person"
 ```
 
-**File:** `.env.example`
+### Integration Tests (With Mocks)
+
+```python
+# tests/integration/test_mocked_pipeline.py
+
+async def test_full_deidentification_pipeline():
+    """Test complete pipeline with mock services."""
+    # Load sample TIFF
+    with open("tests/fixtures/sample_medical_record.tiff", "rb") as f:
+        tiff_bytes = f.read()
+    
+    # Use mock services
+    ocr_service = MockOCRService()
+    phi_service = MockPHIDetectionService()
+    entity_matcher = EntityMatcher()
+    masking_service = ImageMaskingService()
+    
+    # Run pipeline
+    service = DeidentificationService(
+        ocr_service=ocr_service,
+        phi_detection_service=phi_service,
+        entity_matcher=entity_matcher,
+        image_masking_service=masking_service
+    )
+    
+    result = await service.deidentify_document("job-123", tiff_bytes)
+    
+    assert result.status == "success"
+    assert result.pages_processed > 0
+    assert result.phi_entities_count > 0
+    assert len(result.masked_image_bytes) > 0
+    
+    # Save for visual inspection
+    with open("tests/output/masked_sample.tiff", "wb") as f:
+        f.write(result.masked_image_bytes)
+```
+
+---
+
+## Configuration
+
+### Environment Variables
 
 ```bash
-# API
-API_HOST=0.0.0.0
-API_PORT=8000
+# Core Settings
+MASKING_LEVEL=safe_harbor  # safe_harbor | limited_dataset | custom
+CONFIDENCE_THRESHOLD=0.80  # Only mask entities above this confidence
+PHI_CATEGORIES=Person,Date,SSN,PhoneNumber  # For custom mode
 
-# Storage (choose one)
-STORAGE_BACKEND=s3
-S3_ENDPOINT_URL=http://minio:9000
-S3_BUCKET=redactify
-S3_ACCESS_KEY=minioadmin
-S3_SECRET_KEY=minioadmin
+# Azure Document Intelligence (OCR)
+AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT=https://xxx.cognitiveservices.azure.com/
+AZURE_DOCUMENT_INTELLIGENCE_KEY=xxx
 
-# Database
-DATABASE_URL=postgresql+asyncpg://redactify:redactify@postgres:5432/redactify
-
-# Azure Document Intelligence (REQUIRED)
-AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT=https://your-instance.cognitiveservices.azure.com/
-AZURE_DOCUMENT_INTELLIGENCE_KEY=your-key-here
-
-# Celery
-CELERY_BROKER_URL=redis://redis:6379/0
-CELERY_RESULT_BACKEND=redis://redis:6379/0
+# Azure Language (PII Detection)
+AZURE_LANGUAGE_ENDPOINT=https://xxx.cognitiveservices.azure.com/
+AZURE_LANGUAGE_KEY=xxx
 
 # Processing
 MAX_FILE_SIZE_MB=50
-MASKING_PADDING_PX=5
-LOG_LEVEL=INFO
+MASKING_PADDING_PX=5  # Extra padding around masked regions
+```
+
+### Custom PHI Patterns (Optional)
+
+```yaml
+# src/config/phi_patterns.yaml
+
+# Supplement ML-based detection with regex for institution-specific IDs
+patterns:
+  - name: MRN
+    regex: '\b(?:MRN|Medical Record)[:\s#]*([A-Z0-9]{6,12})\b'
+    category: MedicalRecordNumber
+    flags: IGNORECASE
+  
+  - name: AccountNumber
+    regex: '\b(?:Account|Acct\.?)[:\s#]*(\d{6,12})\b'
+    category: AccountNumber
+    flags: IGNORECASE
+  
+  - name: InsuranceMemberID
+    regex: '\b(?:Member|Insurance) ID[:\s]*([A-Z0-9]{8,15})\b'
+    category: InsuranceID
+    flags: IGNORECASE
+
+# Users can add custom patterns for their institution
 ```
 
 ---
 
-### 5. API Endpoints
+## Dependencies
 
-**File:** `redactify/api/routes.py`
+```bash
+# Core
+poetry add pillow  # Image processing
+poetry add python-Levenshtein  # Fuzzy string matching
 
-```python
-from fastapi import FastAPI, File, UploadFile, HTTPException, Depends
-from fastapi.responses import Response
-from sqlalchemy.ext.asyncio import AsyncSession
-from redactify.db.session import get_db
-from redactify.db.models import Job, JobStatus
-from redactify.storage import get_storage_backend
-from redactify.tasks import deidentify_document_task
-from redactify.config import settings
-import uuid
-from datetime import datetime
+# Azure Services
+poetry add azure-ai-formrecognizer  # Document Intelligence OCR
+poetry add azure-ai-textanalytics  # Language PII detection
 
+# AWS Services (Future)
+poetry add boto3  # AWS SDK
+poetry add aioboto3  # Async AWS SDK
 
-app = FastAPI(
-    title="Redactify",
-    description="Medical document de-identification service",
-    version="0.1.0"
-)
+# Testing
+poetry add --group dev pytest pytest-asyncio pytest-cov
+poetry add --group dev python-Levenshtein  # For testing fuzzy matching
+poetry add --group dev faker  # Generate fake PHI for tests
 
-
-@app.post("/jobs", status_code=202)
-async def create_job(
-    file: UploadFile = File(...),
-    db: AsyncSession = Depends(get_db)
-):
-    """
-    Submit a TIFF document for de-identification.
-    
-    Returns job ID for polling status.
-    """
-    # Validate file type
-    if not file.filename.lower().endswith(('.tif', '.tiff')):
-        raise HTTPException(status_code=400, detail="Only TIFF files supported")
-    
-    # Validate file size
-    content = await file.read()
-    size_mb = len(content) / (1024 * 1024)
-    if size_mb > settings.MAX_FILE_SIZE_MB:
-        raise HTTPException(
-            status_code=413,
-            detail=f"File too large. Max size: {settings.MAX_FILE_SIZE_MB}MB"
-        )
-    
-    # Generate job ID
-    job_id = str(uuid.uuid4())
-    
-    # Upload input file to storage
-    storage = get_storage_backend()
-    input_key = f"input/{job_id}.tiff"
-    await storage.upload(input_key, content)
-    
-    # Create job record
-    job = Job(
-        id=job_id,
-        status=JobStatus.PENDING,
-        input_key=input_key,
-        created_at=datetime.utcnow()
-    )
-    db.add(job)
-    await db.commit()
-    
-    # Enqueue task
-    deidentify_document_task.delay(job_id)
-    
-    return {
-        "job_id": job_id,
-        "status": "pending",
-        "status_url": f"/jobs/{job_id}",
-        "message": "Job submitted successfully"
-    }
-
-
-@app.get("/jobs/{job_id}")
-async def get_job_status(job_id: str, db: AsyncSession = Depends(get_db)):
-    """Get job status and metadata."""
-    result = await db.get(Job, job_id)
-    if not result:
-        raise HTTPException(status_code=404, detail="Job not found")
-    
-    response = {
-        "job_id": result.id,
-        "status": result.status.value,
-        "created_at": result.created_at.isoformat(),
-    }
-    
-    if result.status == JobStatus.PROCESSING:
-        response["started_at"] = result.started_at.isoformat() if result.started_at else None
-    
-    if result.status == JobStatus.COMPLETE:
-        response.update({
-            "completed_at": result.completed_at.isoformat(),
-            "result_url": f"/jobs/{job_id}/result",
-            "metadata": {
-                "pages_processed": result.pages_processed,
-                "phi_entities_masked": result.phi_entities_masked,
-                "processing_time_ms": result.processing_time_ms
-            }
-        })
-    
-    if result.status == JobStatus.FAILED:
-        response["error"] = result.error_message
-    
-    return response
-
-
-@app.get("/jobs/{job_id}/result")
-async def download_result(job_id: str, db: AsyncSession = Depends(get_db)):
-    """Download the masked TIFF."""
-    job = await db.get(Job, job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
-    
-    if job.status != JobStatus.COMPLETE:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Job not complete. Current status: {job.status.value}"
-        )
-    
-    # Download from storage
-    storage = get_storage_backend()
-    try:
-        masked_tiff = await storage.download(job.output_key)
-    except FileNotFoundError:
-        raise HTTPException(status_code=404, detail="Result file not found")
-    
-    return Response(
-        content=masked_tiff,
-        media_type="image/tiff",
-        headers={
-            "Content-Disposition": f"attachment; filename=masked_{job_id}.tiff",
-            "X-Job-ID": job_id,
-            "X-Pages-Processed": str(job.pages_processed),
-            "X-PHI-Entities-Masked": str(job.phi_entities_masked),
-            "X-Processing-Time-MS": str(job.processing_time_ms)
-        }
-    )
-
-
-@app.get("/health")
-async def health_check():
-    """Health check endpoint."""
-    return {
-        "status": "healthy",
-        "service": "redactify",
-        "version": "0.1.0"
-    }
-```
-
----
-
-### 6. Celery Worker
-
-**File:** `redactify/tasks.py`
-
-```python
-from celery import Celery
-from redactify.config import settings
-from redactify.db.session import AsyncSessionLocal
-from redactify.db.models import Job, JobStatus
-from redactify.storage import get_storage_backend
-from redactify.services.deidentification_service import DeidentificationService
-from redactify.services.ocr_service import OCRService
-from redactify.services.phi_detection_service import PHIDetectionService
-from redactify.services.image_masking_service import ImageMaskingService
-from redactify.utils.image_processing import ImageProcessor
-from datetime import datetime
-import logging
-import asyncio
-
-logger = logging.getLogger(__name__)
-
-celery_app = Celery(
-    "redactify",
-    broker=settings.CELERY_BROKER_URL,
-    backend=settings.CELERY_RESULT_BACKEND
-)
-
-celery_app.conf.update(
-    task_serializer="json",
-    accept_content=["json"],
-    result_serializer="json",
-    task_track_started=True,
-    task_time_limit=3600,  # 1 hour max
-    task_soft_time_limit=3000,  # 50 minutes soft limit
-)
-
-
-def get_deidentification_service():
-    """Factory for creating service with all dependencies."""
-    return DeidentificationService(
-        ocr_service=OCRService(),
-        phi_detection_service=PHIDetectionService(),
-        image_masking_service=ImageMaskingService(),
-        image_processor=ImageProcessor()
-    )
-
-
-@celery_app.task(
-    bind=True,
-    autoretry_for=(Exception,),
-    retry_backoff=True,
-    retry_backoff_max=600,
-    retry_kwargs={'max_retries': settings.MAX_RETRIES}
-)
-def deidentify_document_task(self, job_id: str):
-    """
-    Celery task to de-identify a document.
-    Runs in worker process.
-    """
-    asyncio.run(_process_job(job_id, self.request.retries))
-
-
-async def _process_job(job_id: str, retry_count: int):
-    """Async function to process a job."""
-    storage = get_storage_backend()
-    
-    async with AsyncSessionLocal() as db:
-        # Update job status to processing
-        job = await db.get(Job, job_id)
-        if not job:
-            logger.error(f"Job {job_id} not found")
-            return
-        
-        job.status = JobStatus.PROCESSING
-        job.started_at = datetime.utcnow()
-        job.retry_count = retry_count
-        await db.commit()
-        
-        try:
-            # Download input TIFF
-            logger.info(f"Processing job {job_id}")
-            input_bytes = await storage.download(job.input_key)
-            
-            # Process document
-            service = get_deidentification_service()
-            result = await service.deidentify_document(job_id, input_bytes)
-            
-            if result.status == "failure":
-                raise Exception(f"De-identification failed: {', '.join(result.errors)}")
-            
-            # Upload output TIFF
-            output_key = f"output/{job_id}.tiff"
-            await storage.upload(output_key, result.masked_tiff_bytes)
-            
-            # Update job with success
-            job.status = JobStatus.COMPLETE
-            job.output_key = output_key
-            job.pages_processed = result.pages_processed
-            job.phi_entities_masked = result.phi_entities_count
-            job.processing_time_ms = result.processing_time_ms
-            job.completed_at = datetime.utcnow()
-            
-            logger.info(
-                f"Job {job_id} complete: "
-                f"{result.pages_processed} pages, "
-                f"{result.phi_entities_count} PHI entities masked"
-            )
-            
-        except Exception as e:
-            logger.error(f"Job {job_id} failed: {str(e)}", exc_info=True)
-            job.status = JobStatus.FAILED
-            job.error_message = str(e)
-            job.completed_at = datetime.utcnow()
-        
-        await db.commit()
-```
-
----
-
-### 7. Auth Abstraction (Placeholder)
-
-**File:** `redactify/api/auth.py`
-
-```python
-from fastapi import Depends, HTTPException, Header
-from typing import Optional
-
-
-class AuthBackend:
-    """
-    Authentication backend abstraction.
-    
-    By default, this is a no-op (pass-through) for deployment behind
-    an API gateway that handles authentication.
-    
-    To implement custom auth:
-    1. Subclass AuthBackend
-    2. Override authenticate()
-    3. Set in dependencies
-    
-    Example with API key:
-    
-        class APIKeyAuth(AuthBackend):
-            async def authenticate(self, authorization: Optional[str]) -> bool:
-                if not authorization:
-                    raise HTTPException(401, "Missing API key")
-                # Validate key...
-                return True
-    
-    Example with JWT:
-    
-        class JWTAuth(AuthBackend):
-            async def authenticate(self, authorization: Optional[str]) -> dict:
-                token = authorization.replace("Bearer ", "")
-                payload = jwt.decode(token, SECRET_KEY)
-                return payload
-    """
-    
-    async def authenticate(
-        self,
-        authorization: Optional[str] = Header(None)
-    ) -> bool:
-        """
-        Override this method to implement authentication.
-        
-        Args:
-            authorization: Authorization header value
-            
-        Returns:
-            True if authenticated, or user info dict
-            
-        Raises:
-            HTTPException: If authentication fails
-        """
-        # Default: no authentication (pass-through)
-        return True
-
-
-# Dependency for routes
-async def get_current_user(
-    auth: AuthBackend = Depends(lambda: AuthBackend())
-):
-    """
-    FastAPI dependency for authentication.
-    
-    Usage in routes:
-        @app.post("/jobs")
-        async def create_job(
-            file: UploadFile,
-            user = Depends(get_current_user)  # Add this
-        ):
-            ...
-    """
-    return await auth.authenticate()
+# Existing (from Phase 1-2)
+poetry add fastapi uvicorn sqlalchemy asyncpg celery redis aiofiles
 ```
 
 ---
@@ -761,1042 +901,379 @@ async def get_current_user(
 ## Project Structure
 
 ```
-redactify/
+redactifai/
 ├── .env.example
 ├── .gitignore
 ├── LICENSE (MIT)
 ├── README.md
 ├── pyproject.toml
+├── pytest.ini
 ├── docker-compose.yml
 ├── Dockerfile
 ├── Dockerfile.worker
-├── alembic.ini
-├── alembic/
-│   ├── env.py
-│   └── versions/
-├── redactify/
+│
+├── src/
 │   ├── __init__.py
-│   ├── config.py
-│   ├── tasks.py
 │   │
-│   ├── api/
+│   ├── models/
 │   │   ├── __init__.py
-│   │   ├── routes.py
-│   │   └── auth.py
+│   │   └── domain.py              # All dataclasses (OCRResult, PHIEntity, etc.)
 │   │
-│   ├── db/
+│   ├── services/
 │   │   ├── __init__.py
-│   │   ├── models.py
-│   │   └── session.py
+│   │   ├── ocr_service.py         # Abstract OCR interface
+│   │   ├── mock_ocr_service.py    # Mock for testing
+│   │   ├── azure_ocr_service.py   # Azure Document Intelligence
+│   │   ├── phi_detection_service.py      # Abstract PHI interface
+│   │   ├── mock_phi_detection_service.py # Mock for testing
+│   │   ├── azure_phi_detection_service.py # Azure Language PII
+│   │   ├── entity_matcher.py      # **CORE LOGIC** - Map entities to boxes
+│   │   ├── image_masking_service.py      # Draw black rectangles
+│   │   └── deidentification_service.py   # Orchestrates pipeline
+│   │
+│   ├── utils/
+│   │   ├── __init__.py
+│   │   ├── image_processor.py     # TIFF load/split/reassemble
+│   │   ├── geometry.py            # Bounding box operations
+│   │   └── logging.py             # Structured logging
+│   │
+│   ├── config/
+│   │   └── phi_patterns.yaml      # Custom regex patterns
 │   │
 │   ├── storage/
 │   │   ├── __init__.py
 │   │   ├── base.py
 │   │   ├── s3.py
-│   │   ├── azure_blob.py
-│   │   └── local.py
+│   │   ├── local.py
+│   │   └── settings.py
 │   │
-│   ├── services/
+│   ├── db/
 │   │   ├── __init__.py
-│   │   ├── deidentification_service.py
-│   │   ├── ocr_service.py
-│   │   ├── phi_detection_service.py
-│   │   └── image_masking_service.py
+│   │   ├── models.py              # Job ORM
+│   │   └── session.py             # DatabaseSessionManager
 │   │
-│   ├── domain/
+│   ├── api/
 │   │   ├── __init__.py
-│   │   └── models.py
+│   │   └── routes.py              # FastAPI endpoints
 │   │
-│   ├── utils/
-│   │   ├── __init__.py
-│   │   ├── geometry.py
-│   │   ├── image_processing.py
-│   │   ├── medical_phi_patterns.py
-│   │   └── logging.py
-│   │
-│   └── config/
-│       └── phi_patterns.yaml
+│   └── tasks.py                   # Celery worker tasks
 │
 ├── tests/
 │   ├── __init__.py
 │   ├── conftest.py
+│   │
 │   ├── unit/
-│   │   ├── test_storage.py
-│   │   ├── test_phi_detection.py
-│   │   └── test_masking.py
-│   └── integration/
-│       └── test_api.py
+│   │   ├── test_entity_matcher.py    # **PRIORITY** - Core logic tests
+│   │   ├── test_image_masking.py
+│   │   ├── test_geometry.py
+│   │   └── test_storage.py
+│   │
+│   ├── integration/
+│   │   ├── test_mocked_pipeline.py   # Full flow with mocks
+│   │   └── test_api.py
+│   │
+│   └── fixtures/
+│       ├── sample_medical_record.tiff
+│       └── expected_ocr_output.json
 │
 └── scripts/
-    ├── run_api.sh
-    ├── run_worker.sh
-    └── init_db.py
+    ├── init_db.py
+    └── run_tests.sh
 ```
 
 ---
 
-## Implementation Order
+## Success Metrics
 
-### **Phase 1: Foundation (Days 1-2)**
+### After 16 Hours (Critical Path Complete)
 
-**Goal:** Set up project skeleton, configuration, and storage abstraction
+**Must Have:**
+- ✅ `EntityMatcher` working with 90%+ accuracy on test data
+- ✅ Handles all major edge cases (OCR errors, multi-line, whitespace)
+- ✅ End-to-end pipeline works with mock services
+- ✅ Can load TIFF, mask PHI, save result
+- ✅ Unit test coverage >80%
+- ✅ Integration tests pass
 
-**Tasks:**
-1. ✅ Initialize Poetry project
-   ```bash
-   poetry init
-   poetry add fastapi uvicorn sqlalchemy asyncpg aiosqlite celery redis
-   poetry add azure-ai-formrecognizer azure-storage-blob boto3 pillow pyyaml
-   poetry add pydantic-settings python-multipart alembic
-   poetry add --group dev pytest pytest-asyncio pytest-cov black ruff
-   ```
+**Nice to Have:**
+- ✅ Performance profiling done
+- ✅ Configuration system working
+- ✅ Documentation for core algorithm
 
-2. ✅ Create project structure (folders, `__init__.py` files)
+### Post-16 Hours (Real Services)
 
-3. ✅ Implement `config.py` with Settings
+**Phase 6: Azure Integration (4-6 hours)**
+- Implement `AzureDocumentIntelligenceOCR`
+- Implement `AzureLanguagePHIService`
+- Test with real Azure credentials
+- Handle API errors and rate limits
 
-4. ✅ Implement storage abstraction:
-   - `storage/base.py` - Abstract base class
-   - `storage/s3.py` - MinIO/S3 implementation
-   - `storage/local.py` - Local filesystem (for tests)
-
-5. ✅ Write unit tests for storage backends
-
-6. ✅ Create `.env.example` and `.gitignore`
-
-**Deliverable:** Can upload/download files to MinIO via abstraction
-
----
-
-### **Phase 2: Domain Models & Database (Days 3-4)**
-
-**Goal:** Set up data models and database layer
-
-**Tasks:**
-1. ✅ Implement `domain/models.py` (dataclasses)
-
-2. ✅ Implement `db/models.py` (SQLAlchemy models)
-
-3. ✅ Implement `db/session.py` (async session management)
-
-4. ✅ Set up Alembic for migrations
-   ```bash
-   poetry run alembic init alembic
-   # Create initial migration
-   poetry run alembic revision --autogenerate -m "initial"
-   ```
-
-5. ✅ Write `scripts/init_db.py` for database initialization
-
-6. ✅ Write unit tests using SQLite in-memory
-
-**Deliverable:** Can create/query job records in database
+**Phase 7: API & Workers (from original spec)**
+- FastAPI endpoints
+- Celery tasks
+- Job queue management
+- (Already designed in original spec)
 
 ---
 
-### **Phase 3: Core Services (Days 5-7)**
+## Open Questions to Resolve
 
-**Goal:** Implement de-identification business logic
+### 1. HIPAA Compliance Level
 
-**Tasks:**
-1. ✅ Implement `utils/image_processing.py` (TIFF load/save)
+**Question:** What masking level should be the default?
 
-2. ✅ Implement `utils/geometry.py` (coordinate transformations)
+**Options:**
+- `safe_harbor` (strictest) - Mask ALL identifiers including providers
+- `limited_dataset` - Keep provider names, mask patient info
+- `custom` - User-defined
 
-3. ✅ Implement `utils/medical_phi_patterns.py` (regex pattern loading)
+**Recommendation:** Default to `safe_harbor` for liability reasons. Let users opt into less restrictive modes.
 
-4. ✅ Implement `services/ocr_service.py` (Azure Document Intelligence)
+### 2. Confidence Threshold
 
-5. ✅ Implement `services/phi_detection_service.py` (Azure + regex)
+**Question:** What confidence threshold for masking entities?
 
-6. ✅ Implement `services/image_masking_service.py` (Pillow masking)
+**Context:** ML services return confidence scores (0.0-1.0). Low-confidence entities might be false positives.
 
-7. ✅ Implement `services/deidentification_service.py` (orchestrator)
+**Options:**
+- Mask everything (threshold=0.0) - May over-mask
+- Threshold=0.8 - Conservative, may miss some PHI
+- Threshold=0.5 - Aggressive, more false positives
 
-8. ✅ Create `config/phi_patterns.yaml` with default patterns
+**Recommendation:** Default to 0.8, make it configurable. Log low-confidence entities for review.
 
-9. ✅ Write unit tests for each service (mock Azure API)
+### 3. Fuzzy Matching Tolerance
 
-**Deliverable:** Can process a TIFF end-to-end (without API/queue)
+**Question:** How tolerant should fuzzy matching be for OCR errors?
 
----
+**Context:** Levenshtein distance allows character substitutions. Distance=1 means one character different.
 
-### **Phase 4: API & Celery (Days 8-9)**
+**Options:**
+- Distance ≤ 1 - Very strict, may miss OCR errors
+- Distance ≤ 2 - Moderate, good balance
+- Distance ≤ 3 - Lenient, may match wrong words
 
-**Goal:** Add REST API and async task processing
+**Recommendation:** Distance ≤ 2 for words >5 characters, exact match for shorter words.
 
-**Tasks:**
-1. ✅ Implement `api/routes.py` (FastAPI endpoints)
+### 4. Multi-Page Entity Handling
 
-2. ✅ Implement `api/auth.py` (placeholder auth)
+**Question:** How to handle entities that span page boundaries?
 
-3. ✅ Implement `tasks.py` (Celery task definition)
+**Example:** Address starts at bottom of page 1, continues on page 2.
 
-4. ✅ Create `scripts/run_api.sh` and `scripts/run_worker.sh`
+**Options:**
+- Split entity, create mask region per page
+- Only mask portion on first page
+- Skip masking (log warning)
 
-5. ✅ Write integration tests for API endpoints
+**Recommendation:** Split and mask on both pages. Track page boundaries in offset calculation.
 
-6. ✅ Test full flow: submit job → poll status → download result
+### 5. Provider Name Masking
 
-**Deliverable:** Working async API with Celery workers
+**Question:** Should provider names always be maskable separately?
 
----
+**Context:** For research use, might want "Patient saw Dr. Smith for X" where patient is masked but doctor isn't.
 
-### **Phase 5: Docker & DevOps (Days 10-11)**
+**Options:**
+- Always mask providers (safe_harbor)
+- Make provider masking optional (limited_dataset)
+- Detect provider context (complex)
 
-**Goal:** Containerize services and set up local development environment
+**Recommendation:** Support both modes via `MASKING_LEVEL` config.
 
-**Tasks:**
-1. ✅ Create `Dockerfile` for API service
-   ```dockerfile
-   FROM python:3.11-slim
-   
-   WORKDIR /app
-   
-   # Install system dependencies
-   RUN apt-get update && apt-get install -y \
-       libpq-dev \
-       && rm -rf /var/lib/apt/lists/*
-   
-   # Install Poetry
-   RUN pip install poetry
-   
-   # Copy dependency files
-   COPY pyproject.toml poetry.lock ./
-   
-   # Install dependencies (no dev)
-   RUN poetry config virtualenvs.create false \
-       && poetry install --no-dev --no-interaction --no-ansi
-   
-   # Copy application
-   COPY redactify/ ./redactify/
-   COPY alembic/ ./alembic/
-   COPY alembic.ini ./
-   
-   EXPOSE 8000
-   
-   CMD ["uvicorn", "redactify.api.routes:app", "--host", "0.0.0.0", "--port", "8000"]
-   ```
+### 6. Padding Around Masked Regions
 
-2. ✅ Create `Dockerfile.worker` for Celery worker
-   ```dockerfile
-   FROM python:3.11-slim
-   
-   WORKDIR /app
-   
-   RUN apt-get update && apt-get install -y \
-       libpq-dev \
-       && rm -rf /var/lib/apt/lists/*
-   
-   RUN pip install poetry
-   
-   COPY pyproject.toml poetry.lock ./
-   RUN poetry config virtualenvs.create false \
-       && poetry install --no-dev --no-interaction --no-ansi
-   
-   COPY redactify/ ./redactify/
-   
-   CMD ["celery", "-A", "redactify.tasks", "worker", "--loglevel=info"]
-   ```
+**Question:** Should masked rectangles extend beyond exact bounding box?
 
-3. ✅ Create `docker-compose.yml`
-   ```yaml
-   version: '3.8'
-   
-   services:
-     postgres:
-       image: postgres:15
-       environment:
-         POSTGRES_DB: redactify
-         POSTGRES_USER: redactify
-         POSTGRES_PASSWORD: redactify
-       ports:
-         - "5432:5432"
-       volumes:
-         - postgres_data:/var/lib/postgresql/data
-       healthcheck:
-         test: ["CMD-SHELL", "pg_isready -U redactify"]
-         interval: 10s
-         timeout: 5s
-         retries: 5
-   
-     redis:
-       image: redis:7-alpine
-       ports:
-         - "6379:6379"
-       healthcheck:
-         test: ["CMD", "redis-cli", "ping"]
-         interval: 10s
-         timeout: 5s
-         retries: 5
-   
-     minio:
-       image: minio/minio
-       command: server /data --console-address ":9001"
-       environment:
-         MINIO_ROOT_USER: minioadmin
-         MINIO_ROOT_PASSWORD: minioadmin
-       ports:
-         - "9000:9000"
-         - "9001:9001"
-       volumes:
-         - minio_data:/data
-       healthcheck:
-         test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
-         interval: 10s
-         timeout: 5s
-         retries: 5
-   
-     # Create MinIO bucket on startup
-     minio-init:
-       image: minio/mc
-       depends_on:
-         - minio
-       entrypoint: >
-         /bin/sh -c "
-         /usr/bin/mc alias set myminio http://minio:9000 minioadmin minioadmin;
-         /usr/bin/mc mb myminio/redactify --ignore-existing;
-         exit 0;
-         "
-   
-     api:
-       build:
-         context: .
-         dockerfile: Dockerfile
-       ports:
-         - "8000:8000"
-       env_file:
-         - .env
-       depends_on:
-         postgres:
-           condition: service_healthy
-         redis:
-           condition: service_healthy
-         minio:
-           condition: service_healthy
-       volumes:
-         - ./redactify:/app/redactify
-       command: >
-         sh -c "
-         poetry run alembic upgrade head &&
-         uvicorn redactify.api.routes:app --host 0.0.0.0 --port 8000 --reload
-         "
-   
-     worker:
-       build:
-         context: .
-         dockerfile: Dockerfile.worker
-       env_file:
-         - .env
-       depends_on:
-         postgres:
-           condition: service_healthy
-         redis:
-           condition: service_healthy
-         minio:
-           condition: service_healthy
-       volumes:
-         - ./redactify:/app/redactify
-       command: celery -A redactify.tasks worker --loglevel=info
-   
-   volumes:
-     postgres_data:
-     minio_data:
-   ```
+**Context:** Small text might be partially visible at edges.
 
-4. ✅ Create `scripts/run_api.sh`
-   ```bash
-   #!/bin/bash
-   set -e
-   
-   echo "Running database migrations..."
-   poetry run alembic upgrade head
-   
-   echo "Starting API server..."
-   poetry run uvicorn redactify.api.routes:app \
-       --host 0.0.0.0 \
-       --port 8000 \
-       --reload
-   ```
+**Options:**
+- No padding (exact bbox)
+- Small padding (5px)
+- Percentage-based padding (10% of box size)
 
-5. ✅ Create `scripts/run_worker.sh`
-   ```bash
-   #!/bin/bash
-   set -e
-   
-   echo "Starting Celery worker..."
-   poetry run celery -A redactify.tasks worker \
-       --loglevel=info \
-       --concurrency=2
-   ```
-
-6. ✅ Create `scripts/init_db.py`
-   ```python
-   """Initialize database with tables."""
-   import asyncio
-   from redactify.db.models import Base
-   from redactify.db.session import engine
-   
-   
-   async def init_db():
-       async with engine.begin() as conn:
-           await conn.run_sync(Base.metadata.create_all)
-       print("Database initialized successfully")
-   
-   
-   if __name__ == "__main__":
-       asyncio.run(init_db())
-   ```
-
-7. ✅ Test full stack:
-   ```bash
-   docker-compose up -d
-   # Wait for services to be healthy
-   docker-compose ps
-   # Test API
-   curl http://localhost:8000/health
-   ```
-
-**Deliverable:** Full stack running in Docker Compose
+**Recommendation:** Default to 5px padding, make configurable via `MASKING_PADDING_PX`.
 
 ---
 
-### **Phase 6: Documentation & Testing (Days 12-13)**
+## Risk Assessment
 
-**Goal:** Write comprehensive documentation and tests
+### High Risk (Core Logic Issues)
 
-**Tasks:**
-1. ✅ Write `README.md` (see below)
+| Risk | Impact | Mitigation |
+|------|--------|------------|
+| **EntityMatcher fails to match entities** | PHI not masked, HIPAA violation | Extensive testing with real medical records, log unmatched entities |
+| **Fuzzy matching too aggressive** | Masks non-PHI words | Tune Levenshtein distance, add confidence threshold |
+| **Multi-line entities not handled** | Partial masking | Track line breaks in offset calculation, test thoroughly |
+| **OCR quality too poor** | Can't find entities | Document OCR quality requirements, reject low-quality scans |
 
-2. ✅ Write `CONTRIBUTING.md` with:
-   - Code style guidelines (Black, Ruff)
-   - How to run tests
-   - How to submit PRs
+### Medium Risk (Service Integration)
 
-3. ✅ Write `docs/DEPLOYMENT.md` with:
-   - Production deployment guide
-   - AWS/Azure/GCP examples
-   - Environment variable reference
-   - Scaling considerations
+| Risk | Impact | Mitigation |
+|------|--------|------------|
+| **Azure API rate limits** | Processing delays | Implement retry logic, queue management |
+| **Azure service outages** | Service unavailable | Graceful degradation, clear error messages |
+| **Cost overruns** | Expensive to run | Monitor API usage, set budget alerts |
+| **Coordinate system mismatches** | Masks in wrong place | Normalize all coordinates, extensive testing |
 
-4. ✅ Write `docs/CONFIGURATION.md` with:
-   - Storage backend configuration
-   - Custom PHI patterns
-   - Auth implementation examples
+### Low Risk (Nice-to-Have Features)
 
-5. ✅ Add comprehensive test coverage:
-   ```bash
-   poetry run pytest --cov=redactify --cov-report=html
-   # Target: >80% coverage
-   ```
-
-6. ✅ Set up pre-commit hooks (Black, Ruff, tests)
-
-7. ✅ Add GitHub Actions CI/CD (if hosting on GitHub)
-   ```yaml
-   # .github/workflows/test.yml
-   name: Tests
-   
-   on: [push, pull_request]
-   
-   jobs:
-     test:
-       runs-on: ubuntu-latest
-       steps:
-         - uses: actions/checkout@v3
-         - uses: actions/setup-python@v4
-           with:
-             python-version: '3.11'
-         - name: Install Poetry
-           run: pip install poetry
-         - name: Install dependencies
-           run: poetry install
-         - name: Run tests
-           run: poetry run pytest --cov
-         - name: Check formatting
-           run: poetry run black --check .
-         - name: Lint
-           run: poetry run ruff check .
-   ```
-
-**Deliverable:** Production-ready documentation and CI
+| Risk | Impact | Mitigation |
+|------|--------|------------|
+| **AWS integration delayed** | Single-vendor lock-in | Already abstracted, can add later |
+| **Custom patterns complex** | Users struggle to configure | Good documentation, examples |
+| **Performance issues** | Slow processing | Profile and optimize, consider batch processing |
 
 ---
 
-### **Phase 7: Polish & Release (Day 14)**
+## Deployment Considerations (Post-Development)
 
-**Goal:** Final polish and prepare for open-source release
-
-**Tasks:**
-1. ✅ Add observability:
-   - Structured logging with `structlog`
-   - Add request IDs to all logs
-   - Log job state transitions
-
-2. ✅ Add health checks:
-   - `/health` - basic health
-   - `/health/ready` - check dependencies (DB, Redis, MinIO)
-
-3. ✅ Add metrics endpoint (optional):
-   - Prometheus-compatible `/metrics`
-   - Track: jobs submitted, jobs completed, processing time, errors
-
-4. ✅ Security review:
-   - No hardcoded secrets
-   - Secure defaults
-   - Input validation
-   - Rate limiting (document in README)
-
-5. ✅ Performance testing:
-   - Test with 100-page documents
-   - Measure memory usage
-   - Identify bottlenecks
-
-6. ✅ Create example requests in `examples/`:
-   ```bash
-   examples/
-   ├── submit_job.sh
-   ├── check_status.sh
-   ├── download_result.sh
-   └── sample_tiff/
-       └── test_document.tiff
-   ```
-
-7. ✅ Write release notes for v0.1.0
-
-8. ✅ Tag release and publish to GitHub
-
-**Deliverable:** Public GitHub repository with v0.1.0 release
-
----
-
-## README.md (Draft)
-
-```markdown
-# Redactify
-
-**Open-source medical document de-identification service**
-
-Redactify automatically detects and masks Protected Health Information (PHI) in medical document images using Azure Document Intelligence and configurable regex patterns.
-
-![License](https://img.shields.io/badge/license-MIT-blue.svg)
-![Python](https://img.shields.io/badge/python-3.11+-blue.svg)
-
-## Features
-
-- 🔒 **Automatic PHI Detection** - Identifies names, dates, SSNs, addresses, medical IDs
-- 🎯 **Visual Masking** - Masks PHI directly on document images (TIFF format)
-- ⚡ **Async Processing** - Submit jobs and poll for results (handles large documents)
-- 🔌 **Pluggable Storage** - Support for S3, Azure Blob, MinIO, or local filesystem
-- 🧩 **Configurable Patterns** - Add custom regex patterns for institution-specific identifiers
-- 🐳 **Docker Ready** - Full Docker Compose setup for local development
-- 🔓 **Open Source** - MIT licensed, contribution-friendly
-
-## Quick Start
-
-### Prerequisites
-
-- Python 3.11+
-- Docker & Docker Compose
-- Azure Document Intelligence account ([get one free](https://azure.microsoft.com/en-us/free/cognitive-services/))
-
-### 1. Clone and Configure
+### Azure Resources Needed
 
 ```bash
-git clone https://github.com/yourusername/redactify.git
-cd redactify
+# Document Intelligence
+az cognitiveservices account create \
+  --name redactifai-ocr \
+  --resource-group redactifai-rg \
+  --kind FormRecognizer \
+  --sku S0 \
+  --location eastus
 
-# Copy environment template
-cp .env.example .env
-
-# Add your Azure credentials to .env
-# AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT=https://your-instance.cognitiveservices.azure.com/
-# AZURE_DOCUMENT_INTELLIGENCE_KEY=your-key-here
+# Language Service (PII Detection)
+az cognitiveservices account create \
+  --name redactifai-phi \
+  --resource-group redactifai-rg \
+  --kind TextAnalytics \
+  --sku S \
+  --location eastus
 ```
 
-### 2. Start Services
+### Cost Estimates (Azure)
 
-```bash
-docker-compose up -d
-```
+**Document Intelligence (OCR):**
+- Read API: $1.50 per 1,000 pages
+- For 10,000 pages/month: ~$15/month
 
-This starts:
-- **API Server** (port 8000)
-- **Celery Worker**
-- **PostgreSQL** (database)
-- **Redis** (job queue)
-- **MinIO** (S3-compatible storage)
+**Language Service (PII Detection):**
+- Text Analytics: $2 per 1,000 text records
+- Assuming 1 record = 1 page: ~$20/month for 10,000 pages
 
-### 3. Submit a Document
+**Total: ~$35/month for 10,000 pages**
 
-```bash
-curl -X POST http://localhost:8000/jobs \
-  -F "file=@/path/to/medical_record.tiff" \
-  | jq .
-
-# Response:
-# {
-#   "job_id": "550e8400-e29b-41d4-a716-446655440000",
-#   "status": "pending",
-#   "status_url": "/jobs/550e8400-e29b-41d4-a716-446655440000"
-# }
-```
-
-### 4. Check Status
-
-```bash
-curl http://localhost:8000/jobs/550e8400-e29b-41d4-a716-446655440000 | jq .
-
-# Response:
-# {
-#   "job_id": "550e8400-e29b-41d4-a716-446655440000",
-#   "status": "complete",
-#   "result_url": "/jobs/550e8400-e29b-41d4-a716-446655440000/result",
-#   "metadata": {
-#     "pages_processed": 25,
-#     "phi_entities_masked": 147,
-#     "processing_time_ms": 32450.2
-#   }
-# }
-```
-
-### 5. Download Result
-
-```bash
-curl -O http://localhost:8000/jobs/550e8400-e29b-41d4-a716-446655440000/result \
-  --output masked_document.tiff
-```
-
-## Architecture
-
-```
-┌─────────────┐
-│  REST API   │ ──────┐
-└─────────────┘       │
-                      ▼
-┌─────────────┐   ┌────────────┐   ┌──────────────┐
-│   MinIO     │◄──│   Celery   │──►│ PostgreSQL   │
-│  (Storage)  │   │  Workers   │   │  (Jobs DB)   │
-└─────────────┘   └────────────┘   └──────────────┘
-                      │
-                      ▼
-              ┌───────────────┐
-              │ Azure Doc     │
-              │ Intelligence  │
-              └───────────────┘
-```
-
-## Configuration
-
-### Storage Backends
-
-**S3 / MinIO** (default):
-```bash
-STORAGE_BACKEND=s3
-S3_ENDPOINT_URL=http://localhost:9000
-S3_BUCKET=redactify
-S3_ACCESS_KEY=minioadmin
-S3_SECRET_KEY=minioadmin
-```
-
-**Azure Blob Storage**:
-```bash
-STORAGE_BACKEND=azure
-AZURE_STORAGE_CONNECTION_STRING=DefaultEndpointsProtocol=https;...
-AZURE_STORAGE_CONTAINER=redactify
-```
-
-**Local Filesystem** (dev only):
-```bash
-STORAGE_BACKEND=local
-LOCAL_STORAGE_PATH=/tmp/redactify
-```
-
-### Custom PHI Patterns
-
-Add institution-specific identifiers to `redactify/config/phi_patterns.yaml`:
-
-```yaml
-patterns:
-  - name: CustomMRN
-    regex: 'MRN-\d{8}'
-    category: MedicalID_Custom
-    flags: IGNORECASE
-```
-
-See [Configuration Guide](docs/CONFIGURATION.md) for details.
-
-## Production Deployment
-
-See [Deployment Guide](docs/DEPLOYMENT.md) for:
-- AWS ECS deployment
-- Azure Container Apps deployment
-- Kubernetes manifests
-- Scaling considerations
-- Production storage configuration
-
-## Development
-
-### Setup
-
-```bash
-# Install Poetry
-curl -sSL https://install.python-poetry.org | python3 -
-
-# Install dependencies
-poetry install
-
-# Run tests
-poetry run pytest
-
-# Format code
-poetry run black .
-
-# Lint
-poetry run ruff check .
-```
-
-### Running Locally (without Docker)
-
-```bash
-# Start dependencies
-docker-compose up -d postgres redis minio
-
-# Run migrations
-poetry run alembic upgrade head
-
-# Start API
-poetry run uvicorn redactify.api.routes:app --reload
-
-# Start worker (in another terminal)
-poetry run celery -A redactify.tasks worker --loglevel=info
-```
-
-## API Reference
-
-### Endpoints
-
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | `/jobs` | Submit document for de-identification |
-| GET | `/jobs/{id}` | Get job status |
-| GET | `/jobs/{id}/result` | Download masked document |
-| GET | `/health` | Health check |
-
-See [API Documentation](docs/API.md) for detailed request/response examples.
-
-## Contributing
-
-Contributions welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
-
-## License
-
-MIT License - see [LICENSE](LICENSE) for details.
-
-## Security
-
-**Important**: This service masks PHI but does not guarantee 100% removal. Always:
-- Review output documents
-- Implement additional security controls
-- Comply with HIPAA and relevant regulations
-- Do NOT use for production without proper testing
-
-Report security issues to: [security email]
-
-## Acknowledgments
-
-- Uses [Azure Document Intelligence](https://azure.microsoft.com/en-us/products/ai-services/ai-document-intelligence) for OCR and PII detection
-- Inspired by medical data de-identification challenges in healthcare
-
-## Support
-
-- 📖 [Documentation](docs/)
-- 🐛 [Issue Tracker](https://github.com/yourusername/redactify/issues)
-- 💬 [Discussions](https://github.com/yourusername/redactify/discussions)
+Plus infrastructure (compute, storage, database) ~$50-100/month.
 
 ---
 
-**It's ReDACTify, not RedactiFY** ✨
-```
+## Timeline Summary
+
+### Critical Path (16 hours)
+- **Hours 1-4:** Data models + EntityMatcher core
+- **Hours 5-8:** Edge case handling
+- **Hours 9-11:** Mock services
+- **Hours 12-14:** Image masking + pipeline
+- **Hours 15-16:** Configuration + final testing
+
+### Post-Critical Path
+- **Hours 17-22:** Azure service integration (~6 hours)
+- **Hours 23-28:** API + Celery workers (~6 hours)
+- **Hours 29-32:** Docker + deployment (~4 hours)
+- **Hours 33-36:** Documentation + polish (~4 hours)
+
+**Total: ~36 hours for production-ready v1.0**
 
 ---
 
-## pyproject.toml (Complete)
+## Next Steps
 
-```toml
-[tool.poetry]
-name = "redactify"
-version = "0.1.0"
-description = "Open-source medical document de-identification service"
-authors = ["Your Name <your.email@example.com>"]
-license = "MIT"
-readme = "README.md"
-homepage = "https://github.com/yourusername/redactify"
-repository = "https://github.com/yourusername/redactify"
-keywords = ["healthcare", "phi", "deidentification", "hipaa", "medical"]
+1. **Review this spec** - Confirm approach makes sense
+2. **Start new thread** - Copy this spec, begin implementation
+3. **Build in order:**
+   - Phase 1: Data models + EntityMatcher core
+   - Phase 2: Edge cases
+   - Phase 3: Mocks
+   - Phase 4: Image masking
+   - Phase 5: Configuration
+   - Phase 6+: Real services
 
-[tool.poetry.dependencies]
-python = "^3.11"
-fastapi = "^0.109.0"
-uvicorn = {extras = ["standard"], version = "^0.27.0"}
-sqlalchemy = "^2.0.25"
-asyncpg = "^0.29.0"
-aiosqlite = "^0.19.0"
-celery = "^5.3.6"
-redis = "^5.0.1"
-azure-ai-formrecognizer = "^3.3.2"
-azure-storage-blob = "^12.19.0"
-boto3 = "^1.34.34"
-pillow = "^10.2.0"
-pyyaml = "^6.0.1"
-pydantic-settings = "^2.1.0"
-python-multipart = "^0.0.6"
-alembic = "^1.13.1"
-structlog = "^24.1.0"
-
-[tool.poetry.group.dev.dependencies]
-pytest = "^8.0.0"
-pytest-asyncio = "^0.23.4"
-pytest-cov = "^4.1.0"
-black = "^24.1.1"
-ruff = "^0.2.0"
-httpx = "^0.26.0"
-faker = "^22.6.0"
-
-[tool.black]
-line-length = 100
-target-version = ['py311']
-
-[tool.ruff]
-line-length = 100
-target-version = "py311"
-
-[tool.pytest.ini_options]
-asyncio_mode = "auto"
-testpaths = ["tests"]
-python_files = "test_*.py"
-python_classes = "Test*"
-python_functions = "test_*"
-
-[build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"
-```
+4. **Test continuously** - Write tests as you build each component
 
 ---
 
-## Testing Strategy
+## Appendix: Azure API Examples
 
-### Unit Tests
-
-**File:** `tests/unit/test_storage.py`
+### Document Intelligence OCR Request
 
 ```python
-import pytest
-from redactify.storage.local import LocalStorageBackend
-import tempfile
-import os
+from azure.ai.formrecognizer import DocumentAnalysisClient
 
+client = DocumentAnalysisClient(endpoint, credential)
 
-@pytest.mark.asyncio
-async def test_local_storage_upload_download():
-    """Test local storage upload and download."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        storage = LocalStorageBackend(base_path=tmpdir)
-        
-        # Upload
-        test_data = b"test content"
-        key = await storage.upload("test.txt", test_data)
-        
-        # Verify file exists
-        assert await storage.exists(key)
-        
-        # Download
-        downloaded = await storage.download(key)
-        assert downloaded == test_data
-        
-        # Delete
-        await storage.delete(key)
-        assert not await storage.exists(key)
+# Analyze document
+poller = client.begin_analyze_document(
+    model_id="prebuilt-read",
+    document=tiff_bytes
+)
+result = poller.result()
+
+# Response structure
+{
+  "apiVersion": "2024-11-30",
+  "content": "Samuel Grummons had a vasectomy...",
+  "pages": [
+    {
+      "pageNumber": 1,
+      "width": 2550,
+      "height": 3300,
+      "words": [
+        {
+          "content": "Samuel",
+          "polygon": [145, 220, 230, 220, 230, 244, 145, 244],
+          "confidence": 0.994,
+          "span": {"offset": 0, "length": 6}
+        }
+      ]
+    }
+  ]
+}
 ```
 
-**File:** `tests/unit/test_phi_detection.py`
+### Language PII Detection Request
 
 ```python
-import pytest
-from redactify.utils.medical_phi_patterns import MedicalPHIPatterns
+from azure.ai.textanalytics import TextAnalyticsClient
 
+client = TextAnalyticsClient(endpoint, credential)
 
-def test_mrn_pattern_detection():
-    """Test MRN regex pattern detection."""
-    patterns = MedicalPHIPatterns()
-    
-    test_text = "Patient MRN: ABC123456 was admitted"
-    
-    for name, regex in patterns.get_patterns():
-        if name == "MRN":
-            match = regex.search(test_text)
-            assert match is not None
-            assert "ABC123456" in match.group(0)
-```
+# Detect PII
+response = client.recognize_pii_entities(
+    documents=["Samuel Grummons had a vasectomy on 03/15/2023"],
+    domain="phi"
+)
 
-### Integration Tests
-
-**File:** `tests/integration/test_api.py`
-
-```python
-import pytest
-from fastapi.testclient import TestClient
-from redactify.api.routes import app
-import io
-
-
-@pytest.fixture
-def client():
-    return TestClient(app)
-
-
-def test_submit_job(client):
-    """Test job submission endpoint."""
-    # Create fake TIFF
-    fake_tiff = io.BytesIO(b"fake tiff content")
-    
-    response = client.post(
-        "/jobs",
-        files={"file": ("test.tiff", fake_tiff, "image/tiff")}
-    )
-    
-    assert response.status_code == 202
-    data = response.json()
-    assert "job_id" in data
-    assert data["status"] == "pending"
-
-
-def test_get_job_status(client):
-    """Test job status endpoint."""
-    # First submit a job
-    fake_tiff = io.BytesIO(b"fake tiff content")
-    submit_response = client.post(
-        "/jobs",
-        files={"file": ("test.tiff", fake_tiff, "image/tiff")}
-    )
-    job_id = submit_response.json()["job_id"]
-    
-    # Then check status
-    status_response = client.get(f"/jobs/{job_id}")
-    assert status_response.status_code == 200
-    data = status_response.json()
-    assert data["job_id"] == job_id
-    assert data["status"] in ["pending", "processing", "complete", "failed"]
+# Response structure
+{
+  "entities": [
+    {
+      "text": "Samuel Grummons",
+      "category": "Person",
+      "subcategory": "PersonName",
+      "offset": 0,
+      "length": 15,
+      "confidenceScore": 0.95
+    },
+    {
+      "text": "03/15/2023",
+      "category": "DateTime",
+      "subcategory": "Date",
+      "offset": 32,
+      "length": 10,
+      "confidenceScore": 0.98
+    }
+  ],
+  "redactedText": "********* ******** had a vasectomy on **********"
+}
 ```
 
 ---
 
-## CI/CD Pipeline
-
-**File:** `.github/workflows/ci.yml`
-
-```yaml
-name: CI
-
-on:
-  push:
-    branches: [main, develop]
-  pull_request:
-    branches: [main, develop]
-
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    
-    services:
-      postgres:
-        image: postgres:15
-        env:
-          POSTGRES_PASSWORD: postgres
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-      
-      redis:
-        image: redis:7-alpine
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-    
-    steps:
-      - uses: actions/checkout@v3
-      
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.11'
-      
-      - name: Install Poetry
-        run: |
-          curl -sSL https://install.python-poetry.org | python3 -
-          echo "$HOME/.local/bin" >> $GITHUB_PATH
-      
-      - name: Install dependencies
-        run: poetry install
-      
-      - name: Run tests
-        env:
-          DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/test
-          CELERY_BROKER_URL: redis://localhost:6379/0
-        run: |
-          poetry run pytest --cov=redactify --cov-report=xml --cov-report=term
-      
-      - name: Upload coverage
-        uses: codecov/codecov-action@v3
-        with:
-          files: ./coverage.xml
-      
-      - name: Check formatting
-        run: poetry run black --check .
-      
-      - name: Lint
-        run: poetry run ruff check .
-  
-  build:
-    runs-on: ubuntu-latest
-    needs: test
-    
-    steps:
-      - uses: actions/checkout@v3
-      
-      - name: Build Docker image
-        run: docker build -t redactify:${{ github.sha }} .
-      
-      - name: Test Docker image
-        run: docker run --rm redactify:${{ github.sha }} python -c "import redactify; print('OK')"
-```
-
----
-
-## Summary: What You're Building
-
-**Redactify** is a production-ready, open-source service that:
-
-1. ✅ **Accepts** TIFF medical documents via REST API
-2. ✅ **Detects** PHI using Azure Document Intelligence + custom regex
-3. ✅ **Masks** PHI visually on the document images
-4. ✅ **Returns** sanitized TIFFs asynchronously
-5. ✅ **Abstracts** storage (S3/Azure/MinIO/Local)
-6. ✅ **Scales** with Celery workers and Redis
-7. ✅ **Documents** everything for open-source adoption
-8. ✅ **Tests** with >80% coverage
-9. ✅ **Deploys** via Docker Compose or production orchestrators
-
-**Your internal fork** can then add:
-- Training data collection
-- HITL review workflow
-- GPT-4 markdown conversion
-- Business-specific quality scoring
-
----
-
+**END OF SPECIFICATION**

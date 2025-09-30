@@ -1,0 +1,1 @@
+from .azure_settings import azure_settings, AzureSettings

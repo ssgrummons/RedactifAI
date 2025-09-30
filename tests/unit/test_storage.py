@@ -20,7 +20,7 @@ def mock_s3_storage():
     """Create a mocked S3 storage backend."""
     with mock_aws():
         # Create mock bucket
-        bucket_name = 'test-redactify-bucket'
+        bucket_name = 'test-redactifai-bucket'
         s3_client = boto3.client(
             's3',
             region_name='us-east-1',

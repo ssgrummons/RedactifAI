@@ -4,38 +4,70 @@ import boto3
 from typing import Optional
 from botocore.exceptions import ClientError
 from .base import StorageBackend
-from .settings import settings
+
 
 class S3StorageBackend(StorageBackend):
-    """S3/MinIO storage backend using boto3."""
+    """S3/MinIO storage backend using boto3 with async wrapper."""
     
     def __init__(
         self,
-        endpoint_url: str = None,
-        bucket: str = None,
-        access_key: str = None,
-        secret_key: str = None,
-        region: str = None
+        bucket: str,
+        endpoint_url: Optional[str] = None,
+        access_key: Optional[str] = None,
+        secret_key: Optional[str] = None,
+        region: str = "us-east-1"
     ):
-        # Allow explicit None to disable endpoint_url (for mocking)
-        if endpoint_url is None and hasattr(settings, 'S3_ENDPOINT_URL'):
-            endpoint_url = settings.S3_ENDPOINT_URL
+        """
+        Initialize S3 storage backend.
         
+        Args:
+            bucket: S3 bucket name
+            endpoint_url: Optional S3 endpoint (for MinIO/localstack). 
+                         None for real AWS S3.
+            access_key: AWS access key (required)
+            secret_key: AWS secret key (required)
+            region: AWS region
+        """
+        self.bucket = bucket
         self.endpoint_url = endpoint_url
-        self.bucket = bucket or settings.S3_BUCKET
-        self.region = region or settings.S3_REGION
+        self.region = region
         
-        # Only pass endpoint_url if it's not None (moto doesn't need it)
+        # Build client kwargs
         client_kwargs = {
             'service_name': 's3',
-            'aws_access_key_id': access_key or settings.S3_ACCESS_KEY,
-            'aws_secret_access_key': secret_key or settings.S3_SECRET_KEY,
             'region_name': self.region
         }
+        
+        # Add credentials if provided
+        if access_key and secret_key:
+            client_kwargs['aws_access_key_id'] = access_key
+            client_kwargs['aws_secret_access_key'] = secret_key
+        
+        # Add endpoint_url only if specified (for MinIO/localstack)
         if self.endpoint_url:
             client_kwargs['endpoint_url'] = self.endpoint_url
         
         self.client = boto3.client(**client_kwargs)
+        self._ensure_bucket_exists()
+    
+    def _ensure_bucket_exists(self):
+        """Create bucket if it doesn't exist."""
+        try:
+            self.client.head_bucket(Bucket=self.bucket)
+        except ClientError as e:
+            error_code = e.response.get('Error', {}).get('Code')
+            if error_code == '404':
+                # Bucket doesn't exist, create it
+                if self.region == 'us-east-1':
+                    self.client.create_bucket(Bucket=self.bucket)
+                else:
+                    self.client.create_bucket(
+                        Bucket=self.bucket,
+                        CreateBucketConfiguration={'LocationConstraint': self.region}
+                    )
+            else:
+                # Some other error (permissions, etc.)
+                raise
     
     async def upload(self, key: str, data: bytes, content_type: str = "image/tiff") -> str:
         """Upload data to S3."""
@@ -66,7 +98,8 @@ class S3StorageBackend(StorageBackend):
             )
             return response['Body'].read()
         except ClientError as e:
-            if e.response['Error']['Code'] == 'NoSuchKey':
+            error_code = e.response.get('Error', {}).get('Code')
+            if error_code == 'NoSuchKey':
                 raise FileNotFoundError(f"Key not found: {key}")
             raise
     
@@ -83,10 +116,8 @@ class S3StorageBackend(StorageBackend):
                 )
             )
             return True
-        except ClientError as e:
-            if e.response['Error']['Code'] == '404':
-                return False
-            raise
+        except ClientError:
+            return False
     
     async def delete(self, key: str) -> None:
         """Delete key from S3."""
