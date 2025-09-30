@@ -36,6 +36,8 @@ class TestJobModel:
             job = Job(
                 id=job_id,
                 status=JobStatus.PENDING,
+                provider="azure",
+                masking_level="safe_harbor",
                 input_key="input/test.tiff"
             )
             
@@ -46,6 +48,8 @@ class TestJobModel:
             # Verify job was created
             assert job.id == job_id
             assert job.status == JobStatus.PENDING
+            assert job.provider == "azure"
+            assert job.masking_level == "safe_harbor"
             assert job.input_key == "input/test.tiff"
             assert job.output_key is None
             assert job.retry_count == 0
@@ -61,6 +65,8 @@ class TestJobModel:
             job = Job(
                 id=job_id,
                 status=JobStatus.PENDING,
+                provider="aws",
+                masking_level="limited_dataset",
                 input_key="input/test.tiff"
             )
             session.add(job)
@@ -73,6 +79,7 @@ class TestJobModel:
             assert result is not None
             assert result.id == job_id
             assert result.status == JobStatus.PENDING
+            assert result.provider == "aws"
     
     @pytest.mark.asyncio
     async def test_update_job_status(self, db_manager):
@@ -84,6 +91,8 @@ class TestJobModel:
             job = Job(
                 id=job_id,
                 status=JobStatus.PENDING,
+                provider="azure",
+                masking_level="safe_harbor",
                 input_key="input/test.tiff"
             )
             session.add(job)
@@ -112,6 +121,8 @@ class TestJobModel:
             job = Job(
                 id=job_id,
                 status=JobStatus.PENDING,
+                provider="azure",
+                masking_level="safe_harbor",
                 input_key="input/test.tiff"
             )
             session.add(job)
@@ -148,6 +159,8 @@ class TestJobModel:
             job = Job(
                 id=job_id,
                 status=JobStatus.PENDING,
+                provider="azure",
+                masking_level="safe_harbor",
                 input_key="input/test.tiff"
             )
             session.add(job)
@@ -179,11 +192,15 @@ class TestJobModel:
             pending_job = Job(
                 id=str(uuid.uuid4()),
                 status=JobStatus.PENDING,
+                provider="azure",
+                masking_level="safe_harbor",
                 input_key="input/pending.tiff"
             )
             complete_job = Job(
                 id=str(uuid.uuid4()),
                 status=JobStatus.COMPLETE,
+                provider="aws",
+                masking_level="limited_dataset",
                 input_key="input/complete.tiff"
             )
             
@@ -209,6 +226,8 @@ class TestJobModel:
             job = Job(
                 id=job_id,
                 status=JobStatus.PENDING,
+                provider="azure",
+                masking_level="safe_harbor",
                 input_key="input/test.tiff"
             )
             session.add(job)
@@ -232,6 +251,8 @@ class TestJobModel:
             job = Job(
                 id=job_id,
                 status=JobStatus.PENDING,
+                provider="azure",
+                masking_level="safe_harbor",
                 input_key="input/test.tiff"
             )
             session.add(job)
@@ -258,6 +279,8 @@ class TestJobModel:
                 job1 = Job(
                     id=job_id,
                     status=JobStatus.PENDING,
+                    provider="azure",
+                    masking_level="safe_harbor",
                     input_key="input/test1.tiff"
                 )
                 session.add(job1)
@@ -268,7 +291,29 @@ class TestJobModel:
                 job2 = Job(
                     id=job_id,  # Duplicate!
                     status=JobStatus.PENDING,
+                    provider="azure",
+                    masking_level="safe_harbor",
                     input_key="input/test2.tiff"
                 )
                 session.add(job2)
                 await session.commit()
+    
+    @pytest.mark.asyncio
+    async def test_provider_tracking(self, db_manager):
+        """Test that provider and masking level are tracked correctly."""
+        job_id = str(uuid.uuid4())
+        
+        async with db_manager.get_session() as session:
+            job = Job(
+                id=job_id,
+                status=JobStatus.PENDING,
+                provider="aws",
+                masking_level="custom",
+                input_key="input/test.tiff"
+            )
+            session.add(job)
+            await session.commit()
+            await session.refresh(job)
+            
+            assert job.provider == "aws"
+            assert job.masking_level == "custom"

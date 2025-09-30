@@ -2,14 +2,14 @@ import aiofiles
 import aiofiles.os
 from pathlib import Path
 from .base import StorageBackend
-from .settings import settings
+
 
 
 class LocalStorageBackend(StorageBackend):
     """Local filesystem storage backend for development."""
     
     def __init__(self, base_path: str = None):
-        self.base_path = Path(base_path or settings.LOCAL_STORAGE_PATH)
+        self.base_path = Path(base_path)
         self.base_path.mkdir(parents=True, exist_ok=True)
     
     def _get_full_path(self, key: str) -> Path:

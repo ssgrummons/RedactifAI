@@ -25,7 +25,11 @@ class Job(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True)  # UUID
     status: Mapped[JobStatus] = mapped_column(Enum(JobStatus), default=JobStatus.PENDING)
     
-    # Storage keys
+    # Provider tracking
+    provider: Mapped[str] = mapped_column(String(32))  # azure | aws | mock
+    masking_level: Mapped[str] = mapped_column(String(32))  # safe_harbor | limited_dataset | custom
+    
+    # Storage keys (input = PHI bucket, output = clean bucket)
     input_key: Mapped[str] = mapped_column(String(512))
     output_key: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
     
