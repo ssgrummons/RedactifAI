@@ -1,5 +1,5 @@
 [project]
-name = "redactify"
+name = "redactifai"
 version = "0.1.0"
 description = "Microservice that converts uses Azure Document Intelligence to mask PII in .tiff files"
 authors = [

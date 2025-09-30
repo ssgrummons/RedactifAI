@@ -1,7 +1,7 @@
 """
 EntityMatcher - Core logic for mapping PHI entities to OCR bounding boxes.
 
-This is the critical component that makes Redactify valuable. It solves the
+This is the critical component that makes RedactifAI valuable. It solves the
 fundamental problem: PHI detection gives us character offsets in text, but we
 need pixel coordinates to mask the document.
 """

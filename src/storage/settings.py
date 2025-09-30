@@ -14,16 +14,16 @@ class Settings(BaseSettings):
     # Storage
     STORAGE_BACKEND: Literal["s3", "azure", "local"] = "s3"
     S3_ENDPOINT_URL: str = "http://localhost:9000"
-    S3_BUCKET: str = "redactify"
+    S3_BUCKET: str = "redactifai"
     S3_ACCESS_KEY: str = "minioadmin"
     S3_SECRET_KEY: str = "minioadmin"
     S3_REGION: str = "us-east-1"
     AZURE_STORAGE_CONNECTION_STRING: str = ""
-    AZURE_STORAGE_CONTAINER: str = "redactify"
-    LOCAL_STORAGE_PATH: str = "/tmp/redactify"
+    AZURE_STORAGE_CONTAINER: str = "redactifai"
+    LOCAL_STORAGE_PATH: str = "/tmp/redactifai"
     
     # Database
-    DATABASE_URL: str = "postgresql+asyncpg://redactify:redactify@localhost:5432/redactify"
+    DATABASE_URL: str = "postgresql+asyncpg://redactifai:redactifai@localhost:5432/redactifai"
     
     # Azure Document Intelligence
     AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT: str = ""
