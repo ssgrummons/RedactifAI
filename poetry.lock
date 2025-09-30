@@ -180,6 +180,24 @@ msrest = ">=0.6.21"
 typing-extensions = ">=4.0.1"
 
 [[package]]
+name = "azure-ai-textanalytics"
+version = "5.3.0"
+description = "Microsoft Azure Text Analytics Client Library for Python"
+optional = false
+python-versions = ">=3.7"
+groups = ["main"]
+files = [
+    {file = "azure-ai-textanalytics-5.3.0.zip", hash = "sha256:4f7d067d5bb08422599ca6175510d39b0911c711301647e5f18e904a5027bf58"},
+    {file = "azure_ai_textanalytics-5.3.0-py3-none-any.whl", hash = "sha256:69bb736d93de81060e9075d42b6f0b92c25be0fb106da5cb6a6d30e772168221"},
+]
+
+[package.dependencies]
+azure-common = ">=1.1,<2.0"
+azure-core = ">=1.24.0,<2.0.0"
+isodate = ">=0.6.1,<1.0.0"
+typing-extensions = ">=4.0.1"
+
+[[package]]
 name = "azure-common"
 version = "1.1.28"
 description = "Microsoft Azure Client Library for Python (Common)"
@@ -2512,4 +2530,4 @@ test = ["pytest", "pytest-cov"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.13"
-content-hash = "6004fb4e926dad85bf56b57677c84b5e435ba801bcd21e3106968d75c562538a"
+content-hash = "ae45252f28ceba1af51d19978e8bb27c5242d662eec3ded6774cb5207167c063"
