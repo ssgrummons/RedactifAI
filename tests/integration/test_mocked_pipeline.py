@@ -3,8 +3,7 @@ Integration test for the complete de-identification pipeline using mock services
 """
 
 import pytest
-from src.services.mock_ocr_service import MockOCRService
-from src.services.mock_phi_detection_service import MockPHIDetectionService
+from tests.mocks import MockOCRService, MockPHIDetectionService
 from src.services.entity_matcher import EntityMatcher
 from src.models.domain import MaskingLevel
 
