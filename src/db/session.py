@@ -18,12 +18,24 @@ class DatabaseSessionManager:
             database_url: PostgreSQL connection string - will be converted as needed
             echo: Whether to echo SQL statements for debugging
         """
-        # For async: postgresql+asyncpg://...
-        if not database_url.startswith('postgresql+asyncpg://'):
-            # Convert basic postgresql:// to async version
-            self.async_database_url = database_url.replace('postgresql://', 'postgresql+asyncpg://')
+        if 'sqlite' in database_url:
+            if '+aiosqlite' in database_url:
+                self.async_database_url = database_url
+                self.sync_database_url = database_url.replace('+aiosqlite', '')
+            else:
+                # Assume sync SQLite, create async version
+                self.sync_database_url = database_url
+                self.async_database_url = database_url.replace('sqlite://', 'sqlite+aiosqlite://')
+        # Handle PostgreSQL
+        elif 'postgresql' in database_url:
+            if not database_url.startswith('postgresql+asyncpg://'):
+                self.async_database_url = database_url.replace('postgresql://', 'postgresql+asyncpg://')
+            else:
+                self.async_database_url = database_url
+            
+            self.sync_database_url = database_url.replace('postgresql+asyncpg://', 'postgresql+psycopg2://')
         else:
-            self.async_database_url = database_url
+            raise ValueError(f"Unsupported database URL: {database_url}")
         
         # For sync: postgresql+psycopg2://... (or just postgresql://)
         self.sync_database_url = database_url.replace('postgresql+asyncpg://', 'postgresql+psycopg2://')

@@ -12,7 +12,7 @@ Coordinates the complete pipeline:
 
 import logging
 import time
-from typing import Optional
+from typing import Optional, Union
 
 from src.models.domain import (
     DeidentificationResult,
@@ -68,7 +68,7 @@ class DeidentificationService:
         self,
         document_bytes: bytes,
         masking_level: MaskingLevel = MaskingLevel.SAFE_HARBOR,
-        output_format: Optional[DocumentFormat] = None,
+        output_format: Optional[Union[str,DocumentFormat]] = None,
     ) -> DeidentificationResult:
         """
         De-identify a document by masking all PHI.
@@ -86,7 +86,8 @@ class DeidentificationService:
         """
         start_time = time.time()
         errors = []
-        
+        if type(output_format) == str:
+            output_format = DocumentFormat.from_string(output_format)
         try:
             logger.info(
                 f"Starting de-identification pipeline "
