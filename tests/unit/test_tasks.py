@@ -13,15 +13,6 @@ from src.models.domain import DeidentificationResult, PHIEntity, BoundingBox, Ma
 
 
 @pytest.fixture
-def sample_tiff_bytes():
-    """Create a simple TIFF image for testing."""
-    img = Image.new('RGB', (100, 100), color='white')
-    buffer = BytesIO()
-    img.save(buffer, format='TIFF')
-    return buffer.getvalue()
-
-
-@pytest.fixture
 def mock_deidentification_result(sample_tiff_bytes):
     """Mock successful deidentification result."""
     phi_entity = PHIEntity(

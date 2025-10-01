@@ -5,6 +5,7 @@ from io import BytesIO
 from PIL import Image
 
 from src.db.session import DatabaseSessionManager
+from src.db.models import Base
 
 
 def pytest_configure(config):
@@ -14,14 +15,15 @@ def pytest_configure(config):
     config.addinivalue_line("markers", "slow: mark test as slow-running")
     
 @pytest.fixture
-def sync_db_manager():
-    """Create in-memory test database with sync SQLite."""
+def sync_db_manager(tmp_path):
+    """Create file-based test database for thread safety."""
+    db_path = tmp_path / "test.db"
     manager = DatabaseSessionManager(
-        database_url="sqlite:///:memory:",  # <-- Just use sync SQLite
+        database_url=f"sqlite:///{db_path}",
         echo=False
     )
     
-    # Create tables using sync engine
+    # Create tables
     manager.create_tables_sync()
     
     yield manager
@@ -54,3 +56,19 @@ def sample_tiff_bytes():
     buffer = BytesIO()
     img.save(buffer, format='TIFF')
     return buffer.getvalue()
+
+
+@pytest.fixture
+async def async_db_manager():
+    """Create in-memory test database."""
+    manager = DatabaseSessionManager(
+        database_url="sqlite+aiosqlite:///:memory:",
+        echo=False
+    )
+    
+    # Create tables
+    async with manager.async_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    
+    yield manager
+    await manager.close()
