@@ -25,7 +25,7 @@ HIPAA-compliant document de-identification service that automatically detects an
 
 ```bash
 # Clone repository
-git clone https://github.com/yourusername/redactifai.git
+git clone https://github.com/ssgrummons/redactifai.git
 cd redactifai
 
 # Start all services
@@ -316,7 +316,7 @@ The abstraction supports API keys, JWT, mTLS, or any custom scheme.
 
 ## License
 
-[Your License Here]
+MIT License
 
 ## Support
 
