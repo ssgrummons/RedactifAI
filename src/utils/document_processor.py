@@ -11,6 +11,16 @@ from typing import List, Optional, Dict, Any
 from PIL import Image
 from enum import Enum
 
+# Module-level constant
+_FORMAT_MIME_TYPES = {
+    "image/tiff": "tiff",
+    "image/tif": "tiff",
+    "application/pdf": "pdf",
+    "image/png": "png",
+    "image/jpeg": "jpeg",
+    "image/jpg": "jpeg",
+}
+
 
 class DocumentFormat(str, Enum):
     """Supported document formats."""
@@ -18,6 +28,75 @@ class DocumentFormat(str, Enum):
     PDF = "pdf"
     PNG = "png"
     JPEG = "jpeg"
+    
+    @classmethod
+    def from_string(cls, format_input: str) -> "DocumentFormat":
+        """
+        Create DocumentFormat from various string formats.
+        
+        Handles:
+        - MIME types: "image/tiff", "application/pdf"
+        - Extensions: ".tiff", ".pdf", "tiff", "pdf"
+        - Enum values: "TIFF", "tiff"
+        
+        Args:
+            format_input: Format string in any supported form
+            
+        Returns:
+            DocumentFormat enum
+            
+        Raises:
+            ValueError: If format is not supported
+        """
+        # Normalize input
+        normalized = format_input.lower().strip()
+        
+        # Remove leading dot if present
+        if normalized.startswith('.'):
+            normalized = normalized[1:]
+        
+        # Try MIME type mapping first
+        if normalized in _FORMAT_MIME_TYPES:
+            normalized = _FORMAT_MIME_TYPES[normalized]
+        
+        # Try to create enum
+        try:
+            return cls(normalized)
+        except ValueError:
+            # Try as enum name
+            try:
+                return cls[format_input.upper()]
+            except KeyError:
+                raise ValueError(
+                    f"Unsupported format: {format_input}. "
+                    f"Supported: {', '.join(_FORMAT_MIME_TYPES.keys())} or {', '.join(e.value for e in cls)}"
+                )
+    
+    def to_mime_type(self) -> str:
+        """Convert DocumentFormat to MIME type."""
+        mime_map = {
+            DocumentFormat.TIFF: "image/tiff",
+            DocumentFormat.PDF: "application/pdf",
+            DocumentFormat.PNG: "image/png",
+            DocumentFormat.JPEG: "image/jpeg",
+        }
+        return mime_map[self]
+    
+    def __eq__(self, other) -> bool:
+        """
+        Enhanced equality to handle string comparisons.
+        
+        Allows comparisons like:
+        - DocumentFormat.TIFF == "image/tiff" -> True
+        - DocumentFormat.TIFF == ".tiff" -> True
+        - DocumentFormat.TIFF == "TIFF" -> True
+        """
+        if isinstance(other, str):
+            try:
+                other = self.from_string(other)
+            except ValueError:
+                return False
+        return super().__eq__(other)
 
 
 class CompressionLevel(str, Enum):

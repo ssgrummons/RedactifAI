@@ -14,37 +14,6 @@ class JobStatus(str, Enum):
 
 @dataclass
 class BoundingBox:
-    """Bounding box coordinates for PHI on a page."""
-    page: int
-    x: float
-    y: float
-    width: float
-    height: float
-
-
-@dataclass
-class PHIEntity:
-    """Detected PHI entity with location information."""
-    category: str
-    text: str
-    confidence: float
-    bounding_box: BoundingBox
-
-
-@dataclass
-class DeidentificationResult:
-    """Result of document de-identification."""
-    status: str  # "success" or "failure"
-    masked_tiff_bytes: Optional[bytes]
-    pages_processed: int
-    phi_entities_count: int
-    phi_entities: List[PHIEntity]
-    processing_time_ms: float
-    errors: List[str] = field(default_factory=list)
-
-
-@dataclass
-class BoundingBox:
     """
     Bounding box in pixel coordinates.
     
@@ -267,6 +236,9 @@ class DeidentificationResult:
     mask_regions: List[MaskRegion]
     processing_time_ms: float
     errors: List[str]
+    original_format: Optional[str] = None
+    output_format: Optional[str] = None
+    entities_masked: Optional[int] = None
     
     def __post_init__(self):
         """Validate result."""
