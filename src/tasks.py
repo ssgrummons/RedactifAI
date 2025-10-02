@@ -60,7 +60,8 @@ def deidentify_document_task(
     job_id: str,
     input_key: str,
     masking_level: str,
-    provider: str,
+    ocr_provider: str,
+    phi_provider: str
 ):
     """
     Celery task for document de-identification.
@@ -120,7 +121,8 @@ def deidentify_document_task(
         result = asyncio.run(_run_deidentification_pipeline(
             document_bytes=document_bytes,
             masking_level=masking_level,
-            provider=provider,
+            ocr_provider=ocr_provider,
+            phi_provider=phi_provider
         ))
         
         if result.status != "success":
@@ -198,7 +200,8 @@ def deidentify_document_task(
 async def _run_deidentification_pipeline(
     document_bytes: bytes,
     masking_level: str,
-    provider: str,
+    ocr_provider: str,
+    phi_provider: str
 ):
     """
     Run the async deidentification pipeline.
@@ -215,8 +218,8 @@ async def _run_deidentification_pipeline(
         DeidentificationResult
     """
     # Create services using factory
-    ocr_service = create_ocr_service(provider)
-    phi_service = create_phi_service(provider)
+    ocr_service = create_ocr_service(ocr_provider)
+    phi_service = create_phi_service(phi_provider)
     
     # Create supporting services
     entity_matcher = EntityMatcher()

@@ -25,7 +25,8 @@ def test_client(sync_db_manager, temp_storage_dirs):
     mock_general_settings.MAX_FILE_SIZE_MB = 50
     
     mock_provider_settings = Mock()
-    mock_provider_settings.DEFAULT_PROVIDER = "azure"
+    mock_provider_settings.OCR_PROVIDER = "azure"
+    mock_provider_settings.PHI_PROVIDER = "azure"
     
     # Override dependency functions
     def override_get_db():
@@ -78,7 +79,8 @@ class TestAPIIntegration:
             job = session.get(Job, job_id)
             assert job is not None
             assert job.status == JobStatus.PENDING
-            assert job.provider == "azure"  # Default from settings
+            assert job.ocr_provider == "azure"  # Default from settings
+            assert job.phi_provider == "azure"
             assert job.masking_level == "safe_harbor"
         
         # Retrieve job status
@@ -122,7 +124,8 @@ class TestAPIIntegration:
             job = Job(
                 id=job_id,
                 status=JobStatus.COMPLETE,
-                provider="azure",
+                ocr_provider="azure",
+                phi_provider="azure",
                 masking_level="safe_harbor",
                 input_key=f"input/{job_id}.tiff",
                 output_key=output_key,
@@ -203,7 +206,8 @@ class TestAPIIntegration:
             job = Job(
                 id=completed_job_id,
                 status=JobStatus.COMPLETE,
-                provider="azure",
+                ocr_provider="azure",
+                phi_provider="azure",
                 masking_level="safe_harbor",
                 input_key=f"input/{completed_job_id}.tiff",
                 output_key=f"masked/{completed_job_id}.tiff",

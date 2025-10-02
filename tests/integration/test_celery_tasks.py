@@ -32,7 +32,8 @@ class TestCeleryTaskIntegration:
             job = Job(
                 id=job_id,
                 status=JobStatus.PENDING,
-                provider="mock",
+                ocr_provider="mock",
+                phi_provider="mock",
                 masking_level="safe_harbor",
                 input_key=input_key,
             )
@@ -69,7 +70,8 @@ class TestCeleryTaskIntegration:
                 job_id=job_id,
                 input_key=input_key,
                 masking_level="safe_harbor",
-                provider="mock",
+                ocr_provider="mock",
+                phi_provider="mock"
             )
         
         # Verify result
@@ -100,7 +102,8 @@ class TestCeleryTaskIntegration:
         result = await _run_deidentification_pipeline(
             document_bytes=sample_tiff_bytes,
             masking_level="safe_harbor",
-            provider="mock",
+            ocr_provider="mock",
+            phi_provider="mock"
         )
         
         # Debug: print errors if status is failure
@@ -121,7 +124,8 @@ class TestCeleryTaskIntegration:
             result = await _run_deidentification_pipeline(
                 document_bytes=sample_tiff_bytes,
                 masking_level=masking_level,
-                provider="mock",
+                ocr_provider="mock",
+                phi_provider="mock"
             )
             
             assert result.status == "success"
@@ -134,7 +138,8 @@ class TestCeleryTaskIntegration:
             await _run_deidentification_pipeline(
                 document_bytes=sample_tiff_bytes,
                 masking_level="invalid_level",
-                provider="mock",
+                ocr_provider="mock",
+                phi_provider="mock"
             )
     
     def test_storage_isolation_between_phi_and_clean(
@@ -154,7 +159,8 @@ class TestCeleryTaskIntegration:
             job = Job(
                 id=job_id,
                 status=JobStatus.PENDING,
-                provider="mock",
+                ocr_provider="mock",
+                phi_provider="mock",
                 masking_level="safe_harbor",
                 input_key=input_key,
             )
@@ -189,7 +195,8 @@ class TestCeleryTaskIntegration:
                 job_id=job_id,
                 input_key=input_key,
                 masking_level="safe_harbor",
-                provider="mock",
+                ocr_provider="mock",
+                phi_provider="mock"
             )
         
         # Verify output is only in clean, not in PHI

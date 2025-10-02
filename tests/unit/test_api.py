@@ -50,7 +50,8 @@ def mock_settings():
 def mock_provider_settings():
     """Mock provider settings."""
     settings = Mock()
-    settings.DEFAULT_PROVIDER = "azure"
+    settings.OCR_PROVIDER = "azure"
+    settings.PHI_PROVIDER = "azure"
     return settings
 
 
@@ -77,7 +78,8 @@ def sample_job():
     job = Mock(spec=Job)
     job.id = job_id
     job.status = JobStatus.COMPLETE
-    job.provider = "azure"
+    job.ocr_provider = "azure"
+    job.phi_provider = "azure"
     job.masking_level = "safe_harbor"
     job.created_at = datetime.now(timezone.utc)
     job.started_at = datetime.now(timezone.utc)

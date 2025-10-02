@@ -107,7 +107,8 @@ class TestDeidentificationTaskUnit:
                 job_id=job_id,
                 input_key=input_key,
                 masking_level="safe_harbor",
-                provider="mock",
+                ocr_provider="mock",
+                phi_provider="mock"
             )
             
             # Verify result
@@ -146,7 +147,8 @@ class TestDeidentificationTaskUnit:
                     job_id=job_id,
                     input_key="input/test.tiff",
                     masking_level="safe_harbor",
-                    provider="mock",
+                    ocr_provider="mock",
+                    phi_provider="mock"
                 )
     
     def test_phi_storage_deleted_only_on_success(self, sample_tiff_bytes, mock_deidentification_result):
@@ -190,7 +192,8 @@ class TestDeidentificationTaskUnit:
                 job_id=job_id,
                 input_key=input_key,
                 masking_level="safe_harbor",
-                provider="mock",
+                ocr_provider="mock",
+                phi_provider="mock"
             )
             
             # Verify asyncio.run was called 4 times (including delete)
