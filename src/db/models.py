@@ -26,7 +26,8 @@ class Job(Base):
     status: Mapped[JobStatus] = mapped_column(Enum(JobStatus), default=JobStatus.PENDING)
     
     # Provider tracking
-    provider: Mapped[str] = mapped_column(String(32))  # azure | aws | mock
+    ocr_provider: Mapped[str] = mapped_column(String(32))  # azure | aws | mock
+    phi_provider: Mapped[str] = mapped_column(String(32))  # azure | aws | mock
     masking_level: Mapped[str] = mapped_column(String(32))  # safe_harbor | limited_dataset | custom
     
     # Storage keys (input = PHI bucket, output = clean bucket)

@@ -86,7 +86,8 @@ services:
       STORAGE_CLEAN_BUCKET: redactifai-clean-outputs
       
       # Provider (mock for local dev, azure/aws for production)
-      DEFAULT_PROVIDER: mock
+      OCR_PROVIDER: mock
+      PHI_PROVIDER: mock
       DEFAULT_MASKING_LEVEL: safe_harbor
       
       # API Settings
@@ -136,7 +137,8 @@ services:
       STORAGE_CLEAN_BUCKET: redactifai-clean-outputs
       
       # Provider
-      DEFAULT_PROVIDER: mock
+      OCR_PROVIDER: mock
+      PHI_PROVIDER: mock
       DEFAULT_MASKING_LEVEL: safe_harbor
       
       # Processing
