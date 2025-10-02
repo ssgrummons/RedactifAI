@@ -172,8 +172,7 @@ All configuration via environment variables. See `docker-compose.yml` for defaul
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `OCR_PROVIDER` | OCR provider: `azure`, `aws`, or `mock` | `mock` |
-| `PHI_PROVIDER` | PHI provider: `azure`, `aws`, or `mock` | `mock` |
+| `DEFAULT_PROVIDER` | OCR/PHI provider: `azure`, `aws`, or `mock` | `mock` |
 | `DEFAULT_MASKING_LEVEL` | Default masking level | `safe_harbor` |
 | `MAX_FILE_SIZE_MB` | Maximum upload size | `50` |
 | `CELERY_TASK_MAX_RETRIES` | Retry failed jobs N times | `3` |
@@ -181,8 +180,7 @@ All configuration via environment variables. See `docker-compose.yml` for defaul
 
 **For production with Azure:**
 ```bash
-OCR_PROVIDER=azure
-PHI_PROVIDER=azure
+DEFAULT_PROVIDER=azure
 AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT=https://...
 AZURE_DOCUMENT_INTELLIGENCE_KEY=...
 AZURE_LANGUAGE_ENDPOINT=https://...
@@ -191,20 +189,7 @@ AZURE_LANGUAGE_KEY=...
 
 **For production with AWS:**
 ```bash
-OCR_PROVIDER=aws
-PHI_PROVIDER=aws
-AWS_ACCESS_KEY_ID=...
-AWS_SECRET_ACCESS_KEY=...
-AWS_REGION=us-east-1
-AWS_COMPREHEND_REGION=us-east-1
-```
-
-**For production with AWS and Azure:**
-```bash
-OCR_PROVIDER=azure
-AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT=https://...
-AZURE_DOCUMENT_INTELLIGENCE_KEY=...
-PHI_PROVIDER=aws
+DEFAULT_PROVIDER=aws
 AWS_ACCESS_KEY_ID=...
 AWS_SECRET_ACCESS_KEY=...
 AWS_REGION=us-east-1
@@ -260,7 +245,7 @@ export DB_NAME=redactifai
 export CELERY_BROKER_URL=redis://localhost:6379/0
 export STORAGE_BACKEND=s3
 export STORAGE_S3_ENDPOINT_URL=http://localhost:9000
-export OCR_PROVIDER=mock
+export DEFAULT_PROVIDER=mock
 
 # Run migrations
 poetry run alembic upgrade head

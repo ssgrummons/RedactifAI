@@ -36,8 +36,7 @@ class TestJobModel:
             job = Job(
                 id=job_id,
                 status=JobStatus.PENDING,
-                ocr_provider="azure",
-                phi_provider="azure",
+                provider="azure",
                 masking_level="safe_harbor",
                 input_key="input/test.tiff"
             )
@@ -49,8 +48,7 @@ class TestJobModel:
             # Verify job was created
             assert job.id == job_id
             assert job.status == JobStatus.PENDING
-            assert job.ocr_provider == "azure"
-            assert job.phi_provider == "azure"
+            assert job.provider == "azure"
             assert job.masking_level == "safe_harbor"
             assert job.input_key == "input/test.tiff"
             assert job.output_key is None
@@ -67,8 +65,7 @@ class TestJobModel:
             job = Job(
                 id=job_id,
                 status=JobStatus.PENDING,
-                ocr_provider="aws",
-                phi_provider="aws",
+                provider="aws",
                 masking_level="limited_dataset",
                 input_key="input/test.tiff"
             )
@@ -82,8 +79,7 @@ class TestJobModel:
             assert result is not None
             assert result.id == job_id
             assert result.status == JobStatus.PENDING
-            assert result.ocr_provider == "aws"
-            assert result.phi_provider == "aws"
+            assert result.provider == "aws"
     
     @pytest.mark.asyncio
     async def test_update_job_status(self, db_manager):
@@ -95,8 +91,7 @@ class TestJobModel:
             job = Job(
                 id=job_id,
                 status=JobStatus.PENDING,
-                ocr_provider="azure",
-                phi_provider="azure",
+                provider="azure",
                 masking_level="safe_harbor",
                 input_key="input/test.tiff"
             )
@@ -126,8 +121,7 @@ class TestJobModel:
             job = Job(
                 id=job_id,
                 status=JobStatus.PENDING,
-                ocr_provider="azure",
-                phi_provider="azure",
+                provider="azure",
                 masking_level="safe_harbor",
                 input_key="input/test.tiff"
             )
@@ -165,8 +159,7 @@ class TestJobModel:
             job = Job(
                 id=job_id,
                 status=JobStatus.PENDING,
-                ocr_provider="azure",
-                phi_provider="azure",
+                provider="azure",
                 masking_level="safe_harbor",
                 input_key="input/test.tiff"
             )
@@ -199,16 +192,14 @@ class TestJobModel:
             pending_job = Job(
                 id=str(uuid.uuid4()),
                 status=JobStatus.PENDING,
-                ocr_provider="azure",
-                phi_provider="azure",
+                provider="azure",
                 masking_level="safe_harbor",
                 input_key="input/pending.tiff"
             )
             complete_job = Job(
                 id=str(uuid.uuid4()),
                 status=JobStatus.COMPLETE,
-                ocr_provider="aws",
-                phi_provider="aws",
+                provider="aws",
                 masking_level="limited_dataset",
                 input_key="input/complete.tiff"
             )
@@ -235,8 +226,7 @@ class TestJobModel:
             job = Job(
                 id=job_id,
                 status=JobStatus.PENDING,
-                ocr_provider="azure",
-                phi_provider="azure",
+                provider="azure",
                 masking_level="safe_harbor",
                 input_key="input/test.tiff"
             )
@@ -261,8 +251,7 @@ class TestJobModel:
             job = Job(
                 id=job_id,
                 status=JobStatus.PENDING,
-                ocr_provider="azure",
-                phi_provider="azure",
+                provider="azure",
                 masking_level="safe_harbor",
                 input_key="input/test.tiff"
             )
@@ -290,8 +279,7 @@ class TestJobModel:
                 job1 = Job(
                     id=job_id,
                     status=JobStatus.PENDING,
-                    ocr_provider="azure",
-                    phi_provider="azure",
+                    provider="azure",
                     masking_level="safe_harbor",
                     input_key="input/test1.tiff"
                 )
@@ -303,8 +291,7 @@ class TestJobModel:
                 job2 = Job(
                     id=job_id,  # Duplicate!
                     status=JobStatus.PENDING,
-                    ocr_provider="azure",
-                    phi_provider="azure",
+                    provider="azure",
                     masking_level="safe_harbor",
                     input_key="input/test2.tiff"
                 )
@@ -320,8 +307,7 @@ class TestJobModel:
             job = Job(
                 id=job_id,
                 status=JobStatus.PENDING,
-                ocr_provider="aws",
-                phi_provider="aws",
+                provider="aws",
                 masking_level="custom",
                 input_key="input/test.tiff"
             )
@@ -329,6 +315,5 @@ class TestJobModel:
             await session.commit()
             await session.refresh(job)
             
-            assert job.ocr_provider == "aws"
-            assert job.phi_provider == "aws"
+            assert job.provider == "aws"
             assert job.masking_level == "custom"

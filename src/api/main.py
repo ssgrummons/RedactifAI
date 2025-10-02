@@ -134,8 +134,7 @@ async def create_job(
         job = Job(
             id=job_id,
             status=JobStatus.PENDING,
-            ocr_provider=provider_settings.OCR_PROVIDER,
-            phi_provider=provider_settings.PHI_PROVIDER,
+            provider=provider_settings.DEFAULT_PROVIDER,
             masking_level=masking_level.value,
             input_key=input_key,
         )
@@ -157,8 +156,7 @@ async def create_job(
             job_id=job_id,
             input_key=input_key,
             masking_level=masking_level.value,
-            ocr_provider=provider_settings.OCR_PROVIDER,
-            phi_provider=provider_settings.PHI_PROVIDER,
+            provider=provider_settings.DEFAULT_PROVIDER,
         )
     except Exception as e:
         logger.error(f"Failed to enqueue task: {e}")
@@ -195,7 +193,7 @@ async def get_job_status(
     return JobStatusResponse(
         job_id=job.id,
         status=JobStatusEnum(job.status.value),
-        provider=job.ocr_provider,
+        provider=job.provider,
         masking_level=job.masking_level,
         created_at=job.created_at,
         started_at=job.started_at,
