@@ -261,6 +261,7 @@ export CELERY_BROKER_URL=redis://localhost:6379/0
 export STORAGE_BACKEND=s3
 export STORAGE_S3_ENDPOINT_URL=http://localhost:9000
 export OCR_PROVIDER=mock
+export PHI_PROVIDER=mock
 
 # Run migrations
 poetry run alembic upgrade head
