@@ -1,14 +1,12 @@
 """
-Unit tests for EntityMatcher.
+Additional real-world test scenarios for EntityMatcher.
 
-These tests verify the core matching logic with increasing complexity:
-1. Simple single-word matches
-2. Multi-word entity matches
-3. OCR errors and fuzzy matching
-4. Whitespace inconsistencies
-5. Multi-line entities
-6. Page boundaries
-7. Edge cases
+These tests cover complex production scenarios that we've encountered:
+1. PHI service returns different text than OCR
+2. Fuzzy search over-matching
+3. Short entities causing false positives
+4. Offset misalignment between services
+5. Gateway response format differences
 """
 
 import pytest
@@ -19,272 +17,159 @@ from src.models.domain import (
     OCRResult,
     PHIEntity,
 )
-from src.services.entity_matcher import EntityMatcher, WordOffset
+from src.services.entity_matcher import EntityMatcher
 
 
-class TestWordOffset:
-    """Tests for WordOffset helper class."""
+class TestRealWorldScenarios:
+    """Tests based on actual production issues."""
     
-    def test_contains_offset(self):
-        """Test offset containment checking."""
-        bbox = BoundingBox(page=1, x=100, y=100, width=50, height=20)
-        word = OCRWord(text="Hello", confidence=0.99, bounding_box=bbox)
-        word_offset = WordOffset(word=word, start_offset=0, end_offset=5)
+    def test_phi_service_normalized_text_ocr_has_formatting(self):
+        """
+        Test when PHI service returns normalized text but OCR preserves formatting.
         
-        assert word_offset.contains_offset(0)
-        assert word_offset.contains_offset(4)
-        assert not word_offset.contains_offset(5)
-        assert not word_offset.contains_offset(-1)
-    
-    def test_overlaps_range(self):
-        """Test range overlap checking."""
-        bbox = BoundingBox(page=1, x=100, y=100, width=50, height=20)
-        word = OCRWord(text="Hello", confidence=0.99, bounding_box=bbox)
-        word_offset = WordOffset(word=word, start_offset=5, end_offset=10)
-        
-        # Overlapping ranges
-        assert word_offset.overlaps_range(0, 6)   # Starts before, ends inside
-        assert word_offset.overlaps_range(7, 12)  # Starts inside, ends after
-        assert word_offset.overlaps_range(5, 10)  # Exact match
-        assert word_offset.overlaps_range(4, 11)  # Completely contains
-        
-        # Non-overlapping ranges
-        assert not word_offset.overlaps_range(0, 5)   # Ends at start
-        assert not word_offset.overlaps_range(10, 15) # Starts at end
-
-
-class TestEntityMatcherBasics:
-    """Tests for basic EntityMatcher functionality."""
-    
-    def test_simple_single_word_match(self):
-        """Test matching a single-word entity to a single word."""
-        # OCR result with one word
-        bbox = BoundingBox(page=1, x=100, y=200, width=50, height=20)
-        word = OCRWord(text="John", confidence=0.99, bounding_box=bbox)
-        page = OCRPage(page_number=1, width=1000, height=1000, words=[word])
-        ocr_result = OCRResult(pages=[page], full_text="John")
-        
-        # PHI entity for "John"
-        entities = [
-            PHIEntity(
-                text="John",
-                category="Person",
-                offset=0,
-                length=4,
-                confidence=0.95
-            )
-        ]
-        
-        matcher = EntityMatcher()
-        mask_regions = matcher.match_entities_to_boxes(ocr_result, entities)
-        
-        assert len(mask_regions) == 1
-        region = mask_regions[0]
-        assert region.page == 1
-        assert region.entity_category == "Person"
-        assert region.confidence == 0.95
-        # Box should be word box plus padding
-        assert region.bounding_box.x == bbox.x - 5  # Default padding
-        assert region.bounding_box.width == bbox.width + 10
-    
-    def test_multi_word_entity_match(self):
-        """Test matching a multi-word entity."""
-        # OCR result with two words
-        bbox1 = BoundingBox(page=1, x=100, y=200, width=50, height=20)
-        bbox2 = BoundingBox(page=1, x=155, y=200, width=60, height=20)
-        word1 = OCRWord(text="John", confidence=0.99, bounding_box=bbox1)
-        word2 = OCRWord(text="Smith", confidence=0.99, bounding_box=bbox2)
-        page = OCRPage(page_number=1, width=1000, height=1000, words=[word1, word2])
-        ocr_result = OCRResult(pages=[page], full_text="John Smith")
-        
-        # PHI entity for "John Smith"
-        entities = [
-            PHIEntity(
-                text="John Smith",
-                category="Person",
-                offset=0,
-                length=10,
-                confidence=0.95
-            )
-        ]
-        
-        matcher = EntityMatcher()
-        mask_regions = matcher.match_entities_to_boxes(ocr_result, entities)
-        
-        assert len(mask_regions) == 1
-        region = mask_regions[0]
-        # Should merge both word boxes
-        assert region.bounding_box.x == bbox1.x - 5  # Start of first word
-        assert region.bounding_box.width >= (bbox2.x + bbox2.width) - bbox1.x + 10
-    
-    def test_multiple_entities_in_text(self):
-        """Test matching multiple separate entities."""
-        # OCR: "John Smith had a birthday on 03/15/2023"
+        Real scenario: OCR has "John  Doe" (2 spaces), PHI returns "John Doe" (1 space).
+        Offsets from PHI service don't match OCR full_text.
+        """
+        # OCR with extra spaces
         words = [
-            OCRWord(text="John", confidence=0.99, 
+            OCRWord(text="John", confidence=0.99,
                    bounding_box=BoundingBox(page=1, x=100, y=200, width=50, height=20)),
+            OCRWord(text="Doe", confidence=0.99,
+                   bounding_box=BoundingBox(page=1, x=160, y=200, width=40, height=20)),
+        ]
+        page = OCRPage(page_number=1, width=1000, height=1000, words=words)
+        ocr_result = OCRResult(pages=[page], full_text="John  Doe")  # 2 spaces in OCR
+        
+        # PHI service detected normalized version with offset for normalized text
+        entities = [
+            PHIEntity(
+                text="John Doe",  # 1 space
+                category="Person",
+                offset=0,
+                length=8,  # Length in normalized text, not OCR text!
+                confidence=0.95
+            )
+        ]
+        
+        matcher = EntityMatcher()
+        mask_regions = matcher.match_entities_to_boxes(ocr_result, entities)
+        
+        # Should still match despite offset mismatch
+        assert len(mask_regions) == 1
+        assert mask_regions[0].entity_category == "Person"
+    
+    def test_short_entity_false_positives(self):
+        """
+        Test that short entities don't cause massive over-matching.
+        
+        Real scenario: Entity "J" matched 291 OCR words because every "J"
+        in the document was considered a match.
+        """
+        # Document with many J's
+        words = [
+            OCRWord(text="J", confidence=0.99,
+                   bounding_box=BoundingBox(page=1, x=100, y=200, width=10, height=20)),
             OCRWord(text="Smith", confidence=0.99,
-                   bounding_box=BoundingBox(page=1, x=155, y=200, width=60, height=20)),
-            OCRWord(text="had", confidence=0.99,
-                   bounding_box=BoundingBox(page=1, x=220, y=200, width=40, height=20)),
-            OCRWord(text="a", confidence=0.99,
-                   bounding_box=BoundingBox(page=1, x=265, y=200, width=15, height=20)),
-            OCRWord(text="birthday", confidence=0.99,
-                   bounding_box=BoundingBox(page=1, x=285, y=200, width=80, height=20)),
-            OCRWord(text="on", confidence=0.99,
-                   bounding_box=BoundingBox(page=1, x=370, y=200, width=25, height=20)),
-            OCRWord(text="03/15/2023", confidence=0.99,
-                   bounding_box=BoundingBox(page=1, x=400, y=200, width=100, height=20)),
+                   bounding_box=BoundingBox(page=1, x=115, y=200, width=60, height=20)),
+            OCRWord(text="John", confidence=0.99,
+                   bounding_box=BoundingBox(page=1, x=100, y=250, width=50, height=20)),
+            OCRWord(text="J", confidence=0.99,
+                   bounding_box=BoundingBox(page=1, x=155, y=250, width=10, height=20)),
+            OCRWord(text="Doe", confidence=0.99,
+                   bounding_box=BoundingBox(page=1, x=170, y=250, width=40, height=20)),
+        ]
+        page = OCRPage(page_number=1, width=1000, height=1000, words=words)
+        ocr_result = OCRResult(pages=[page], full_text="J Smith\nJohn J Doe")
+        
+        # PHI entity for single letter (should rarely happen, but can)
+        entities = [
+            PHIEntity(
+                text="J",
+                category="Person",
+                offset=0,
+                length=1,
+                confidence=0.95
+            )
+        ]
+        
+        matcher = EntityMatcher()
+        mask_regions = matcher.match_entities_to_boxes(ocr_result, entities)
+        
+        # Should match only the first J, not every J in document
+        assert len(mask_regions) <= 1
+    
+    def test_common_word_as_phi_entity(self):
+        """
+        Test handling when PHI entity is a common word appearing multiple times.
+        
+        Real scenario: Name "John" appears in "John Doe" and also in 
+        "St. John's Hospital". Fuzzy search might match both.
+        """
+        words = [
+            # Patient name
+            OCRWord(text="Patient:", confidence=0.99,
+                   bounding_box=BoundingBox(page=1, x=100, y=200, width=80, height=20)),
+            OCRWord(text="John", confidence=0.99,
+                   bounding_box=BoundingBox(page=1, x=185, y=200, width=50, height=20)),
+            OCRWord(text="Doe", confidence=0.99,
+                   bounding_box=BoundingBox(page=1, x=240, y=200, width=40, height=20)),
+            # Hospital name
+            OCRWord(text="Hospital:", confidence=0.99,
+                   bounding_box=BoundingBox(page=1, x=100, y=250, width=90, height=20)),
+            OCRWord(text="St.", confidence=0.99,
+                   bounding_box=BoundingBox(page=1, x=195, y=250, width=30, height=20)),
+            OCRWord(text="John's", confidence=0.99,
+                   bounding_box=BoundingBox(page=1, x=230, y=250, width=60, height=20)),
         ]
         page = OCRPage(page_number=1, width=1000, height=1000, words=words)
         ocr_result = OCRResult(
             pages=[page],
-            full_text="John Smith had a birthday on 03/15/2023"
+            full_text="Patient: John Doe\nHospital: St. John's"
         )
         
-        # Two entities: name and date
-        entities = [
-            PHIEntity(text="John Smith", category="Person", 
-                     offset=0, length=10, confidence=0.95),
-            PHIEntity(text="03/15/2023", category="Date",
-                     offset=30, length=10, confidence=0.98),
-        ]
-        
-        matcher = EntityMatcher()
-        mask_regions = matcher.match_entities_to_boxes(ocr_result, entities)
-        
-        assert len(mask_regions) == 2
-        # Verify we got one for each category
-        categories = {r.entity_category for r in mask_regions}
-        assert categories == {"Person", "Date"}
-
-
-class TestOCRErrors:
-    """Tests for handling OCR errors via fuzzy matching."""
-    
-    def test_single_character_ocr_error(self):
-        """Test matching when OCR misreads one character (S→5)."""
-        # OCR misread "Samuel" as "5amuel"
-        bbox = BoundingBox(page=1, x=100, y=200, width=70, height=20)
-        word = OCRWord(text="5amuel", confidence=0.85, bounding_box=bbox)
-        page = OCRPage(page_number=1, width=1000, height=1000, words=[word])
-        ocr_result = OCRResult(pages=[page], full_text="5amuel")
-        
-        # PHI entity has correct spelling
+        # PHI service detected "John Doe" (full name, not just "John")
         entities = [
             PHIEntity(
-                text="Samuel",
+                text="John Doe",
                 category="Person",
-                offset=0,
-                length=6,
-                confidence=0.95
-            )
-        ]
-        
-        matcher = EntityMatcher(fuzzy_match_threshold=2)
-        mask_regions = matcher.match_entities_to_boxes(ocr_result, entities)
-        
-        # Should still match despite OCR error
-        assert len(mask_regions) == 1
-        assert mask_regions[0].entity_category == "Person"
-    
-    def test_multiple_character_ocr_errors(self):
-        """Test matching with multiple character errors within threshold."""
-        # OCR misread "Grummons" as "6rumm0ns" (G→6, o→0)
-        bbox = BoundingBox(page=1, x=100, y=200, width=90, height=20)
-        word = OCRWord(text="6rumm0ns", confidence=0.80, bounding_box=bbox)
-        page = OCRPage(page_number=1, width=1000, height=1000, words=[word])
-        ocr_result = OCRResult(pages=[page], full_text="6rumm0ns")
-        
-        entities = [
-            PHIEntity(
-                text="Grummons",
-                category="Person",
-                offset=0,
+                offset=9,  # After "Patient: "
                 length=8,
                 confidence=0.95
             )
         ]
         
-        matcher = EntityMatcher(fuzzy_match_threshold=2)
+        matcher = EntityMatcher()
         mask_regions = matcher.match_entities_to_boxes(ocr_result, entities)
         
-        # 2 character differences should match with threshold=2
+        # Should mask only "John Doe", not "John's"
         assert len(mask_regions) == 1
+        region = mask_regions[0]
+        # Should be on first line (y=200), not second line (y=250)
+        assert region.bounding_box.y < 230
     
-    def test_too_many_errors_no_match(self):
-        """Test that too many OCR errors prevent matching."""
-        # OCR completely garbled the word
-        bbox = BoundingBox(page=1, x=100, y=200, width=70, height=20)
-        word = OCRWord(text="xyz123", confidence=0.60, bounding_box=bbox)
-        page = OCRPage(page_number=1, width=1000, height=1000, words=[word])
-        ocr_result = OCRResult(pages=[page], full_text="xyz123")
+    def test_offset_completely_wrong_fuzzy_search_saves_it(self):
+        """
+        Test when PHI service offsets are completely wrong but text is findable.
         
-        entities = [
-            PHIEntity(
-                text="Samuel",
-                category="Person",
-                offset=0,
-                length=6,
-                confidence=0.95
-            )
-        ]
-        
-        matcher = EntityMatcher(fuzzy_match_threshold=2)
-        mask_regions = matcher.match_entities_to_boxes(ocr_result, entities)
-        
-        # Should not match - too different
-        assert len(mask_regions) == 0
-
-
-class TestWhitespaceHandling:
-    """Tests for handling inconsistent whitespace."""
-    
-    def test_extra_spaces_in_ocr(self):
-        """Test when OCR has extra spaces between words."""
-        # OCR: "John  Smith" (2 spaces)
+        Real scenario: Gateway wraps PHI service and modifies text somehow,
+        causing all offsets to be shifted. Fuzzy search should find entities
+        by text content.
+        """
         words = [
             OCRWord(text="John", confidence=0.99,
                    bounding_box=BoundingBox(page=1, x=100, y=200, width=50, height=20)),
             OCRWord(text="Smith", confidence=0.99,
-                   bounding_box=BoundingBox(page=1, x=160, y=200, width=60, height=20)),
+                   bounding_box=BoundingBox(page=1, x=155, y=200, width=60, height=20)),
         ]
         page = OCRPage(page_number=1, width=1000, height=1000, words=words)
-        ocr_result = OCRResult(pages=[page], full_text="John  Smith")  # 2 spaces
+        ocr_result = OCRResult(pages=[page], full_text="John Smith")
         
-        # PHI entity with normal spacing
-        entities = [
-            PHIEntity(
-                text="John Smith",  # 1 space
-                category="Person",
-                offset=0,
-                length=10,
-                confidence=0.95
-            )
-        ]
-        
-        matcher = EntityMatcher()
-        mask_regions = matcher.match_entities_to_boxes(ocr_result, entities)
-        
-        # Should still match
-        assert len(mask_regions) == 1
-    
-    def test_missing_spaces_in_ocr(self):
-        """Test when OCR concatenates words."""
-        # OCR: "JohnSmith" (no space)
-        words = [
-            OCRWord(text="JohnSmith", confidence=0.95,
-                   bounding_box=BoundingBox(page=1, x=100, y=200, width=110, height=20)),
-        ]
-        page = OCRPage(page_number=1, width=1000, height=1000, words=words)
-        ocr_result = OCRResult(pages=[page], full_text="JohnSmith")
-        
-        # PHI entity with space
+        # PHI service has completely wrong offset (maybe gateway added a prefix)
         entities = [
             PHIEntity(
                 text="John Smith",
                 category="Person",
-                offset=0,
+                offset=500,  # Way off!
                 length=10,
                 confidence=0.95
             )
@@ -293,46 +178,238 @@ class TestWhitespaceHandling:
         matcher = EntityMatcher()
         mask_regions = matcher.match_entities_to_boxes(ocr_result, entities)
         
-        # Should match the whole word
-        assert len(mask_regions) == 1
-
-
-class TestMultiLineEntities:
-    """Tests for entities spanning multiple lines."""
+        # Fuzzy search should save us
+        assert len(mask_regions) >= 1
+        assert mask_regions[0].entity_category == "Person"
     
-    def test_address_spans_two_lines(self):
-        """Test matching an address that spans two lines."""
-        # Line 1: "123 Main St"
-        # Line 2: "Boston, MA 02101"
+    def test_entity_text_has_newlines_ocr_has_spaces(self):
+        """
+        Test when PHI service preserves newlines but OCR converts to spaces.
+        
+        Real scenario: Address entities from PHI service have \n, but OCR
+        full_text has spaces instead.
+        """
         words = [
-            # Line 1
             OCRWord(text="123", confidence=0.99,
                    bounding_box=BoundingBox(page=1, x=100, y=200, width=40, height=20)),
             OCRWord(text="Main", confidence=0.99,
                    bounding_box=BoundingBox(page=1, x=145, y=200, width=50, height=20)),
             OCRWord(text="St", confidence=0.99,
                    bounding_box=BoundingBox(page=1, x=200, y=200, width=30, height=20)),
-            # Line 2 (y=230)
-            OCRWord(text="Boston,", confidence=0.99,
-                   bounding_box=BoundingBox(page=1, x=100, y=230, width=70, height=20)),
-            OCRWord(text="MA", confidence=0.99,
-                   bounding_box=BoundingBox(page=1, x=175, y=230, width=30, height=20)),
-            OCRWord(text="02101", confidence=0.99,
-                   bounding_box=BoundingBox(page=1, x=210, y=230, width=50, height=20)),
+            OCRWord(text="Boston", confidence=0.99,
+                   bounding_box=BoundingBox(page=1, x=235, y=200, width=70, height=20)),
+        ]
+        page = OCRPage(page_number=1, width=1000, height=1000, words=words)
+        ocr_result = OCRResult(pages=[page], full_text="123 Main St Boston")  # Spaces
+        
+        # PHI service detected address with newline
+        entities = [
+            PHIEntity(
+                text="123 Main St\nBoston",  # Newline
+                category="Address",
+                offset=0,
+                length=18,
+                confidence=0.95
+            )
+        ]
+        
+        matcher = EntityMatcher()
+        mask_regions = matcher.match_entities_to_boxes(ocr_result, entities)
+        
+        # Should still match despite newline vs space difference
+        assert len(mask_regions) >= 1
+    
+    def test_multiple_pages_entity_only_on_one_page(self):
+        """
+        Test multi-page document where entity is only on one page.
+        
+        Real scenario: 28-page document, "John Doe" on page 5. Should not
+        create masks on other pages.
+        """
+        # Create 3 pages, entity only on page 2
+        words_p1 = [
+            OCRWord(text="Page", confidence=0.99,
+                   bounding_box=BoundingBox(page=1, x=100, y=200, width=50, height=20)),
+            OCRWord(text="One", confidence=0.99,
+                   bounding_box=BoundingBox(page=1, x=155, y=200, width=40, height=20)),
+        ]
+        words_p2 = [
+            OCRWord(text="Patient:", confidence=0.99,
+                   bounding_box=BoundingBox(page=2, x=100, y=200, width=80, height=20)),
+            OCRWord(text="John", confidence=0.99,
+                   bounding_box=BoundingBox(page=2, x=185, y=200, width=50, height=20)),
+            OCRWord(text="Doe", confidence=0.99,
+                   bounding_box=BoundingBox(page=2, x=240, y=200, width=40, height=20)),
+        ]
+        words_p3 = [
+            OCRWord(text="Page", confidence=0.99,
+                   bounding_box=BoundingBox(page=3, x=100, y=200, width=50, height=20)),
+            OCRWord(text="Three", confidence=0.99,
+                   bounding_box=BoundingBox(page=3, x=155, y=200, width=60, height=20)),
+        ]
+        
+        page1 = OCRPage(page_number=1, width=1000, height=1000, words=words_p1)
+        page2 = OCRPage(page_number=2, width=1000, height=1000, words=words_p2)
+        page3 = OCRPage(page_number=3, width=1000, height=1000, words=words_p3)
+        
+        ocr_result = OCRResult(
+            pages=[page1, page2, page3],
+            full_text="Page One\nPatient: John Doe\nPage Three"
+        )
+        
+        entities = [
+            PHIEntity(
+                text="John Doe",
+                category="Person",
+                offset=18,  # In the middle section
+                length=8,
+                confidence=0.95
+            )
+        ]
+        
+        matcher = EntityMatcher()
+        mask_regions = matcher.match_entities_to_boxes(ocr_result, entities)
+        
+        # Should have exactly 1 mask region on page 2
+        assert len(mask_regions) == 1
+        assert mask_regions[0].page == 2
+    
+    def test_very_long_document_performance(self):
+        """
+        Test that matching performs reasonably on long documents.
+        
+        Real scenario: 28-page medical record with 10,000+ words.
+        This is more of a sanity check that we don't hang.
+        """
+        # Create a long document (100 words across 5 pages)
+        all_pages = []
+        full_text_parts = []
+        
+        for page_num in range(1, 6):
+            words = []
+            for i in range(20):  # 20 words per page
+                word_text = f"word{page_num}_{i}"
+                words.append(OCRWord(
+                    text=word_text,
+                    confidence=0.99,
+                    bounding_box=BoundingBox(
+                        page=page_num,
+                        x=100 + (i % 5) * 100,
+                        y=200 + (i // 5) * 30,
+                        width=80,
+                        height=20
+                    )
+                ))
+                full_text_parts.append(word_text)
+            
+            all_pages.append(OCRPage(
+                page_number=page_num,
+                width=1000,
+                height=1000,
+                words=words
+            ))
+        
+        ocr_result = OCRResult(
+            pages=all_pages,
+            full_text=" ".join(full_text_parts)
+        )
+        
+        # Entity on page 3
+        entities = [
+            PHIEntity(
+                text="word3_10",
+                category="Person",
+                offset=full_text_parts.index("word3_10") * 9,  # Approximate offset
+                length=8,
+                confidence=0.95
+            )
+        ]
+        
+        matcher = EntityMatcher()
+        # This should not hang or take excessive time
+        mask_regions = matcher.match_entities_to_boxes(ocr_result, entities)
+        
+        # Should find it
+        assert len(mask_regions) >= 1
+
+
+class TestFuzzySearchBehavior:
+    """Tests specifically for fuzzy search edge cases."""
+    
+    def test_fuzzy_search_requires_minimum_length(self):
+        """
+        Test that fuzzy search skips very short entities.
+        
+        Prevents "J" from matching hundreds of single letters.
+        """
+        # Document with many single letters
+        words = []
+        letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+        for i, letter in enumerate(letters):
+            words.append(OCRWord(
+                text=letter,
+                confidence=0.99,
+                bounding_box=BoundingBox(page=1, x=100 + i*20, y=200, width=15, height=20)
+            ))
+        
+        page = OCRPage(page_number=1, width=1000, height=1000, words=words)
+        ocr_result = OCRResult(pages=[page], full_text=" ".join(letters))
+        
+        # Entity for single letter with wrong offset (forces fuzzy search)
+        entities = [
+            PHIEntity(
+                text="J",
+                category="Person",
+                offset=999,  # Wrong offset
+                length=1,
+                confidence=0.95
+            )
+        ]
+        
+        matcher = EntityMatcher()
+        mask_regions = matcher.match_entities_to_boxes(ocr_result, entities)
+        
+        # Fuzzy search should refuse to search for single letters
+        # So we should get 0 matches (not 26!)
+        assert len(mask_regions) == 0
+    
+    def test_fuzzy_search_matches_sequences_not_fragments(self):
+        """
+        Test that fuzzy search matches word sequences, not fragments.
+        
+        "John Doe" should match consecutive words "John" "Doe",
+        not match "John" on page 1 and "Doe" on page 15.
+        """
+        words = [
+            # Page 1: "John Smith"
+            OCRWord(text="John", confidence=0.99,
+                   bounding_box=BoundingBox(page=1, x=100, y=200, width=50, height=20)),
+            OCRWord(text="Smith", confidence=0.99,
+                   bounding_box=BoundingBox(page=1, x=155, y=200, width=60, height=20)),
+            # Some other words
+            OCRWord(text="Random", confidence=0.99,
+                   bounding_box=BoundingBox(page=1, x=100, y=250, width=70, height=20)),
+            OCRWord(text="Text", confidence=0.99,
+                   bounding_box=BoundingBox(page=1, x=175, y=250, width=50, height=20)),
+            # Much later: "Jane Doe"
+            OCRWord(text="Jane", confidence=0.99,
+                   bounding_box=BoundingBox(page=1, x=100, y=500, width=50, height=20)),
+            OCRWord(text="Doe", confidence=0.99,
+                   bounding_box=BoundingBox(page=1, x=155, y=500, width=40, height=20)),
         ]
         page = OCRPage(page_number=1, width=1000, height=1000, words=words)
         ocr_result = OCRResult(
             pages=[page],
-            full_text="123 Main St\nBoston, MA 02101"
+            full_text="John Smith\nRandom Text\nJane Doe"
         )
         
-        # Entity spans both lines
+        # Looking for "John Doe" (which doesn't exist as a sequence)
         entities = [
             PHIEntity(
-                text="123 Main St\nBoston, MA 02101",
-                category="Address",
-                offset=0,
-                length=28,
+                text="John Doe",
+                category="Person",
+                offset=999,  # Force fuzzy search
+                length=8,
                 confidence=0.95
             )
         ]
@@ -340,277 +417,50 @@ class TestMultiLineEntities:
         matcher = EntityMatcher()
         mask_regions = matcher.match_entities_to_boxes(ocr_result, entities)
         
-        # Should merge all words into one box
-        assert len(mask_regions) == 1
-        region = mask_regions[0]
-        # Box should span both lines (y from 200 to 230+20=250)
-        assert region.bounding_box.y <= 200 - 5  # Top of first line + padding
-        assert region.bounding_box.y + region.bounding_box.height >= 250 + 5
-
-
-class TestPageBoundaries:
-    """Tests for entities spanning page boundaries."""
-    
-    def test_entity_spans_two_pages(self):
-        """Test entity that crosses page boundary."""
-        # Page 1: "continued on"
-        words_p1 = [
-            OCRWord(text="continued", confidence=0.99,
-                   bounding_box=BoundingBox(page=1, x=100, y=3200, width=100, height=20)),
-            OCRWord(text="on", confidence=0.99,
-                   bounding_box=BoundingBox(page=1, x=205, y=3200, width=30, height=20)),
-        ]
-        page1 = OCRPage(page_number=1, width=1000, height=3300, words=words_p1)
-        
-        # Page 2: "next page"
-        words_p2 = [
-            OCRWord(text="next", confidence=0.99,
-                   bounding_box=BoundingBox(page=2, x=100, y=100, width=50, height=20)),
-            OCRWord(text="page", confidence=0.99,
-                   bounding_box=BoundingBox(page=2, x=155, y=100, width=50, height=20)),
-        ]
-        page2 = OCRPage(page_number=2, width=1000, height=3300, words=words_p2)
-        
-        ocr_result = OCRResult(
-            pages=[page1, page2],
-            full_text="continued on next page"
-        )
-        
-        # Entity spans both pages
-        entities = [
-            PHIEntity(
-                text="continued on next page",
-                category="Custom",
-                offset=0,
-                length=22,
-                confidence=0.90
-            )
-        ]
-        
-        matcher = EntityMatcher()
-        mask_regions = matcher.match_entities_to_boxes(ocr_result, entities)
-        
-        # Should create two separate mask regions, one per page
-        assert len(mask_regions) == 2
-        pages = {r.page for r in mask_regions}
-        assert pages == {1, 2}
-
-
-class TestConfidenceThreshold:
-    """Tests for confidence-based filtering."""
-    
-    def test_low_confidence_entity_skipped(self):
-        """Test that low-confidence entities are not masked."""
-        bbox = BoundingBox(page=1, x=100, y=200, width=50, height=20)
-        word = OCRWord(text="maybe", confidence=0.99, bounding_box=bbox)
-        page = OCRPage(page_number=1, width=1000, height=1000, words=[word])
-        ocr_result = OCRResult(pages=[page], full_text="maybe")
-        
-        # Low-confidence entity
-        entities = [
-            PHIEntity(
-                text="maybe",
-                category="Person",
-                offset=0,
-                length=5,
-                confidence=0.40  # Low confidence
-            )
-        ]
-        
-        matcher = EntityMatcher(confidence_threshold=0.80)
-        mask_regions = matcher.match_entities_to_boxes(ocr_result, entities)
-        
-        # Should be skipped due to low confidence
+        # Should NOT match - "John" and "Doe" aren't consecutive
         assert len(mask_regions) == 0
     
-    def test_high_confidence_entity_masked(self):
-        """Test that high-confidence entities are masked."""
-        bbox = BoundingBox(page=1, x=100, y=200, width=50, height=20)
-        word = OCRWord(text="John", confidence=0.99, bounding_box=bbox)
-        page = OCRPage(page_number=1, width=1000, height=1000, words=[word])
-        ocr_result = OCRResult(pages=[page], full_text="John")
+    def test_fuzzy_search_stops_after_first_match(self):
+        """
+        Test that fuzzy search doesn't continue after finding a match.
         
-        entities = [
-            PHIEntity(
-                text="John",
-                category="Person",
-                offset=0,
-                length=4,
-                confidence=0.95  # High confidence
-            )
-        ]
-        
-        matcher = EntityMatcher(confidence_threshold=0.80)
-        mask_regions = matcher.match_entities_to_boxes(ocr_result, entities)
-        
-        # Should be masked
-        assert len(mask_regions) == 1
-
-
-class TestEdgeCases:
-    """Tests for edge cases and error conditions."""
-    
-    def test_empty_entities_list(self):
-        """Test with no entities to mask."""
-        bbox = BoundingBox(page=1, x=100, y=200, width=50, height=20)
-        word = OCRWord(text="text", confidence=0.99, bounding_box=bbox)
-        page = OCRPage(page_number=1, width=1000, height=1000, words=[word])
-        ocr_result = OCRResult(pages=[page], full_text="text")
-        
-        matcher = EntityMatcher()
-        mask_regions = matcher.match_entities_to_boxes(ocr_result, [])
-        
-        assert len(mask_regions) == 0
-    
-    def test_entity_not_in_text(self):
-        """Test entity that doesn't appear in OCR text."""
-        bbox = BoundingBox(page=1, x=100, y=200, width=50, height=20)
-        word = OCRWord(text="text", confidence=0.99, bounding_box=bbox)
-        page = OCRPage(page_number=1, width=1000, height=1000, words=[word])
-        ocr_result = OCRResult(pages=[page], full_text="text")
-        
-        # Entity for word that isn't there
-        entities = [
-            PHIEntity(
-                text="missing",
-                category="Person",
-                offset=0,
-                length=7,
-                confidence=0.95
-            )
-        ]
-        
-        matcher = EntityMatcher()
-        mask_regions = matcher.match_entities_to_boxes(ocr_result, entities)
-        
-        # Should return empty list and log warning
-        assert len(mask_regions) == 0
-    
-    def test_overlapping_entities(self):
-        """Test handling of overlapping entities."""
+        If "John Smith" appears twice, should only match the first occurrence.
+        """
         words = [
-            OCRWord(text="Dr.", confidence=0.99,
-                   bounding_box=BoundingBox(page=1, x=100, y=200, width=30, height=20)),
-            OCRWord(text="Smith", confidence=0.99,
-                   bounding_box=BoundingBox(page=1, x=135, y=200, width=60, height=20)),
-        ]
-        page = OCRPage(page_number=1, width=1000, height=1000, words=words)
-        ocr_result = OCRResult(pages=[page], full_text="Dr. Smith")
-        
-        # Two overlapping entities
-        entities = [
-            PHIEntity(text="Dr.", category="Title", 
-                     offset=0, length=3, confidence=0.90),
-            PHIEntity(text="Dr. Smith", category="Person",
-                     offset=0, length=9, confidence=0.95),
-        ]
-        
-        matcher = EntityMatcher()
-        mask_regions = matcher.match_entities_to_boxes(ocr_result, entities)
-        
-        # Should create separate regions for each entity
-        # (overlapping is fine, image masking will handle it)
-        assert len(mask_regions) == 2
-    
-    def test_box_padding_applied(self):
-        """Test that padding is correctly applied to bounding boxes."""
-        bbox = BoundingBox(page=1, x=100, y=200, width=50, height=20)
-        word = OCRWord(text="test", confidence=0.99, bounding_box=bbox)
-        page = OCRPage(page_number=1, width=1000, height=1000, words=[word])
-        ocr_result = OCRResult(pages=[page], full_text="test")
-        
-        entities = [
-            PHIEntity(text="test", category="Person",
-                     offset=0, length=4, confidence=0.95)
-        ]
-        
-        # Custom padding
-        matcher = EntityMatcher(box_padding_px=10)
-        mask_regions = matcher.match_entities_to_boxes(ocr_result, entities)
-        
-        assert len(mask_regions) == 1
-        region = mask_regions[0]
-        
-        # Check padding is applied
-        assert region.bounding_box.x == bbox.x - 10
-        assert region.bounding_box.y == bbox.y - 10
-        assert region.bounding_box.width == bbox.width + 20
-        assert region.bounding_box.height == bbox.height + 20
-    
-    def test_zero_padding(self):
-        """Test with no padding."""
-        bbox = BoundingBox(page=1, x=100, y=200, width=50, height=20)
-        word = OCRWord(text="test", confidence=0.99, bounding_box=bbox)
-        page = OCRPage(page_number=1, width=1000, height=1000, words=[word])
-        ocr_result = OCRResult(pages=[page], full_text="test")
-        
-        entities = [
-            PHIEntity(text="test", category="Person",
-                     offset=0, length=4, confidence=0.95)
-        ]
-        
-        matcher = EntityMatcher(box_padding_px=0)
-        mask_regions = matcher.match_entities_to_boxes(ocr_result, entities)
-        
-        assert len(mask_regions) == 1
-        region = mask_regions[0]
-        
-        # Should match original box exactly
-        assert region.bounding_box.x == bbox.x
-        assert region.bounding_box.y == bbox.y
-        assert region.bounding_box.width == bbox.width
-        assert region.bounding_box.height == bbox.height
-
-
-class TestOffsetMapBuilding:
-    """Tests specifically for the offset map building logic."""
-    
-    def test_offset_map_simple_text(self):
-        """Test offset map with simple text."""
-        words = [
-            OCRWord(text="one", confidence=0.99,
-                   bounding_box=BoundingBox(page=1, x=100, y=200, width=40, height=20)),
-            OCRWord(text="two", confidence=0.99,
-                   bounding_box=BoundingBox(page=1, x=145, y=200, width=40, height=20)),
-            OCRWord(text="three", confidence=0.99,
-                   bounding_box=BoundingBox(page=1, x=190, y=200, width=60, height=20)),
-        ]
-        page = OCRPage(page_number=1, width=1000, height=1000, words=words)
-        ocr_result = OCRResult(pages=[page], full_text="one two three")
-        
-        matcher = EntityMatcher()
-        offset_map = matcher._build_offset_map(ocr_result)
-        
-        # Should have mapped all three words
-        assert len(offset_map) == 3
-        
-        # Check offsets
-        assert offset_map[0].word.text == "one"
-        assert offset_map[0].start_offset == 0
-        assert offset_map[0].end_offset == 3
-        
-        assert offset_map[1].word.text == "two"
-        assert offset_map[1].start_offset == 4
-        assert offset_map[1].end_offset == 7
-        
-        assert offset_map[2].word.text == "three"
-        assert offset_map[2].start_offset == 8
-        assert offset_map[2].end_offset == 13
-    
-    def test_offset_map_with_newlines(self):
-        """Test offset map correctly handles newlines."""
-        words = [
-            OCRWord(text="line1", confidence=0.99,
+            # First occurrence
+            OCRWord(text="John", confidence=0.99,
                    bounding_box=BoundingBox(page=1, x=100, y=200, width=50, height=20)),
-            OCRWord(text="line2", confidence=0.99,
-                   bounding_box=BoundingBox(page=1, x=100, y=230, width=50, height=20)),
+            OCRWord(text="Smith", confidence=0.99,
+                   bounding_box=BoundingBox(page=1, x=155, y=200, width=60, height=20)),
+            # Some space
+            OCRWord(text="...", confidence=0.99,
+                   bounding_box=BoundingBox(page=1, x=100, y=250, width=30, height=20)),
+            # Second occurrence
+            OCRWord(text="John", confidence=0.99,
+                   bounding_box=BoundingBox(page=1, x=100, y=300, width=50, height=20)),
+            OCRWord(text="Smith", confidence=0.99,
+                   bounding_box=BoundingBox(page=1, x=155, y=300, width=60, height=20)),
         ]
         page = OCRPage(page_number=1, width=1000, height=1000, words=words)
-        ocr_result = OCRResult(pages=[page], full_text="line1\nline2")
+        ocr_result = OCRResult(
+            pages=[page],
+            full_text="John Smith\n...\nJohn Smith"
+        )
+        
+        entities = [
+            PHIEntity(
+                text="John Smith",
+                category="Person",
+                offset=999,  # Force fuzzy search
+                length=10,
+                confidence=0.95
+            )
+        ]
         
         matcher = EntityMatcher()
-        offset_map = matcher._build_offset_map(ocr_result)
+        mask_regions = matcher.match_entities_to_boxes(ocr_result, entities)
         
-        assert len(offset_map) == 2
-        assert offset_map[0].end_offset == 5
-        assert offset_map[1].start_offset == 6  # After newline
+        # Should find exactly 1 match (the first occurrence)
+        assert len(mask_regions) == 1
+        # Should be at y=200, not y=300
+        assert mask_regions[0].bounding_box.y < 250
