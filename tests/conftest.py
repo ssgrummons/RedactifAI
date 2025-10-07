@@ -3,6 +3,10 @@ import tempfile
 import shutil
 from io import BytesIO
 from PIL import Image
+from sqlalchemy.ext.compiler import compiles
+from sqlalchemy.schema import CreateColumn
+from sqlalchemy.dialects.postgresql import TSVECTOR
+
 
 from src.db.session import DatabaseSessionManager
 from src.db.models import Base
@@ -13,6 +17,15 @@ def pytest_configure(config):
     config.addinivalue_line("markers", "unit: mark test as a unit test")
     config.addinivalue_line("markers", "integration: mark test as an integration test")
     config.addinivalue_line("markers", "slow: mark test as slow-running")
+
+@compiles(CreateColumn, 'sqlite')
+def skip_tsvector_create_column(element, compiler, **kw):
+    """Skip TSVECTOR columns when creating tables in SQLite."""
+    if isinstance(element.element.type, TSVECTOR):
+        return None  # Skip this column entirely
+    
+    # Use default compilation for other columns
+    return compiler.visit_create_column(element, **kw)
     
 @pytest.fixture
 def sync_db_manager(tmp_path):
