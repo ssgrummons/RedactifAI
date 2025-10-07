@@ -11,7 +11,7 @@ from src.config.celery_settings import CelerySettings
 from src.config.database import DatabaseSettings
 from src.config.provider import ProviderSettings
 from src.db.session import DatabaseSessionManager
-from src.db.models import Job, JobStatus
+from src.db.models import Job, JobStatus, PHIEntity
 from src.storage.factory import create_storage_backend
 from src.services.service_factory import create_ocr_service, create_phi_service
 from src.services.deidentification_service import DeidentificationService
@@ -150,6 +150,31 @@ def deidentify_document_task(
             job.phi_entities_masked = result.entities_masked
             job.processing_time_ms = result.processing_time_ms
             job.completed_at = datetime.now(timezone.utc)
+            
+            # Save PHI entities to database
+            for entity in result.phi_entities:
+                # Get bounding box from first mask region for this entity
+                # (entities can have multiple masks if multi-line, we'll use first)
+                mask_region = next(
+                    (mr for mr in result.mask_regions if mr.entity_category == entity.category),
+                    None
+                )
+                
+                phi_entity = PHIEntity(
+                    job_id=job_id,
+                    text=entity.text,
+                    category=entity.category,
+                    page=mask_region.page if mask_region else 1,
+                    confidence=entity.confidence,
+                    offset=entity.offset,
+                    length=entity.length,
+                    bbox_x=mask_region.bounding_box.x if mask_region else 0.0,
+                    bbox_y=mask_region.bounding_box.y if mask_region else 0.0,
+                    bbox_width=mask_region.bounding_box.width if mask_region else 0.0,
+                    bbox_height=mask_region.bounding_box.height if mask_region else 0.0,
+                )
+                session.add(phi_entity)
+            
             session.commit()
             
             logger.info(
