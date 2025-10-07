@@ -126,7 +126,7 @@ def deidentify_document_task(
         ))
         
         if result.status != "success":
-            raise RuntimeError(f"Deidentification failed: {result.error_message}")
+            raise RuntimeError(f"Deidentification failed: {result.errors}")
         
         # Upload to clean storage
         output_key = f"masked/{job_id}.tiff"

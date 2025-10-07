@@ -65,6 +65,10 @@ class ImageMaskingService:
             logger.info("No mask regions to apply")
             return [img.copy() for img in images]
         
+        # Convert all images to RGB for consistent color handling
+        # Grayscale images will maintain their grayscale appearance
+        images = [img.convert('RGB') if img.mode != 'RGB' else img for img in images]
+        
         # Group mask regions by page
         regions_by_page = self._group_by_page(mask_regions)
         
@@ -108,7 +112,12 @@ class ImageMaskingService:
         masked_img = img.copy()
         
         # Create drawing context
-        draw = ImageDraw.Draw(masked_img, mode='RGBA' if self.debug_mode else 'RGB')
+        if self.debug_mode and masked_img.mode != 'RGBA':
+            masked_img = masked_img.convert('RGBA')
+        elif not self.debug_mode and masked_img.mode != 'RGB':
+            masked_img = masked_img.convert('RGB')
+
+        draw = ImageDraw.Draw(masked_img)
         
         for region in mask_regions:
             bbox = region.bounding_box
