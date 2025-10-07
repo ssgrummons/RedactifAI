@@ -104,11 +104,16 @@ class EntityMatcher:
                 )
                 continue
             
+            logger.info(
+                f"Entity '{entity.text}' at offset {entity.offset}-{entity.end_offset}, "
+                f"searching in text of length {len(ocr_result.full_text)}"
+            )
+            
             # Find OCR words that overlap with this entity
             overlapping_words = self._find_overlapping_words(
                 entity, offset_map, ocr_result.full_text
             )
-            
+            logger.info(f"Found {len(overlapping_words)} overlapping words")
             if overlapping_words:
                 # Group by page (entity might span multiple pages)
                 words_by_page = self._group_by_page(overlapping_words)
@@ -316,33 +321,47 @@ class EntityMatcher:
         
         This is a last-resort when exact offset matching fails. We search for
         the entity text itself in the OCR words.
-        
-        Args:
-            entity: PHI entity we're trying to locate
-            offset_map: Word offset mappings
-            full_text: Original full text
-            
-        Returns:
-            List of WordOffset objects that might contain the entity
         """
         entity_text = entity.text.strip().lower()
+        
+        # Don't use fuzzy search for very short entities - too many false positives
+        if len(entity_text) < 3:
+            logger.debug(f"Skipping fuzzy search for short entity '{entity.text}'")
+            return []
+        
         candidates = []
         
-        # Look for words whose text is similar to the entity text
-        for word_offset in offset_map:
-            word_text = word_offset.word.text.strip().lower()
-            
-            # Check if this word is part of the entity
-            if word_text in entity_text or entity_text in word_text:
-                candidates.append(word_offset)
-            elif Levenshtein.distance(word_text, entity_text) <= self.fuzzy_match_threshold:
-                candidates.append(word_offset)
+        # Look for consecutive words that together match the entity
+        # Instead of matching individual words, look for sequences
+        entity_words = entity_text.split()
         
-        if candidates:
-            logger.info(
-                f"Used fuzzy search to find {len(candidates)} words for "
-                f"entity '{entity.text}' after offset matching failed"
-            )
+        for i in range(len(offset_map)):
+            # Try to match starting at this position
+            matched_words = []
+            
+            for j, entity_word in enumerate(entity_words):
+                if i + j >= len(offset_map):
+                    break
+                
+                ocr_word = offset_map[i + j].word.text.strip().lower()
+                
+                # Does this OCR word match this entity word?
+                if ocr_word == entity_word:
+                    matched_words.append(offset_map[i + j])
+                elif len(entity_word) >= 3 and Levenshtein.distance(ocr_word, entity_word) <= 1:
+                    # Allow 1 edit distance for words of 3+ chars
+                    matched_words.append(offset_map[i + j])
+                else:
+                    # Mismatch, stop trying this sequence
+                    break
+            
+            # If we matched all entity words, add this sequence
+            if len(matched_words) == len(entity_words):
+                candidates.extend(matched_words)
+                logger.info(
+                    f"Fuzzy search found entity '{entity.text}' at offset {offset_map[i].start_offset}"
+                )
+                break  # Found it, don't keep searching
         
         return candidates
     

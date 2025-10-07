@@ -50,8 +50,7 @@ class AzureSettings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         case_sensitive=False,
-        extra="ignore",
-        env_prefix="AZURE_"
+        extra="ignore"
     )
     
     # Document Intelligence (OCR)
