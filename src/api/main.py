@@ -325,6 +325,7 @@ async def download_result(
     )
 
 
+@app.get(
     "/api/v1/jobs/{job_id}/entities",
     response_model=PHIEntitiesResponse,
     summary="Get detected PHI entities",
