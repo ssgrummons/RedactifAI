@@ -62,8 +62,7 @@ class AWSSettings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         case_sensitive=False,
-        extra="ignore",
-        env_prefix="AWS_"
+        extra="ignore"
     )
     
     # AWS credentials (optional if using IAM roles)
