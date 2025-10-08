@@ -29,8 +29,10 @@ from src.api.schemas import (
     JobListItem,
     JobStatusEnum,
     MaskingLevelEnum,
+    PHIEntityResponse,
+    PHIEntitiesResponse,
 )
-from src.db.models import Job, JobStatus
+from src.db.models import Job, JobStatus, PHIEntity
 from src.storage.base import StorageBackend
 from src.config.settings import Settings
 from src.config.provider import ProviderSettings
@@ -320,6 +322,77 @@ async def download_result(
         headers={
             "Content-Disposition": f"attachment; filename=redacted_{job_id}.tiff"
         }
+    )
+
+
+@app.get(
+    "/api/v1/jobs/{job_id}/entities",
+    response_model=PHIEntitiesResponse,
+    summary="Get detected PHI entities",
+    description="Retrieve all PHI entities detected in a document (only available for completed jobs)",
+)
+async def get_phi_entities(
+    job_id: str,
+    include_text: bool = Query(
+        default=False,
+        description="Include actual PHI text in response (WARNING: exposes sensitive data)"
+    ),
+    authenticated: bool = Depends(verify_authentication),
+    db: Session = Depends(get_db_session),
+):
+    """
+    Get list of PHI entities detected in a document.
+    
+    By default, actual PHI text is NOT included (text field will be null).
+    Set include_text=true to expose the actual detected text.
+    
+    Only available for completed jobs.
+    """
+    # Get job
+    job = db.get(Job, job_id)
+    
+    if not job:
+        raise HTTPException(404, f"Job {job_id} not found")
+    
+    # Check job status
+    if job.status != JobStatus.COMPLETE:
+        raise HTTPException(
+            400,
+            f"Entities not available. Job status: {job.status.value}"
+        )
+    
+    # Get entities from database (eager load to avoid N+1 queries)
+    from sqlalchemy.orm import selectinload
+    stmt = select(Job).where(Job.id == job_id).options(selectinload(Job.phi_entities))
+    result = db.execute(stmt)
+    job_with_entities = result.scalar_one()
+    
+    # Convert to response models
+    entity_responses = [
+        PHIEntityResponse(
+            text=entity.text if include_text else None,
+            category=entity.category,
+            page=entity.page,
+            confidence=entity.confidence,
+            offset=entity.offset,
+            length=entity.length,
+            bbox_x=entity.bbox_x,
+            bbox_y=entity.bbox_y,
+            bbox_width=entity.bbox_width,
+            bbox_height=entity.bbox_height,
+        )
+        for entity in job_with_entities.phi_entities
+    ]
+    
+    logger.info(
+        f"Retrieved {len(entity_responses)} entities for job {job_id} "
+        f"(include_text={include_text})"
+    )
+    
+    return PHIEntitiesResponse(
+        job_id=job_id,
+        total_entities=len(entity_responses),
+        entities=entity_responses,
     )
 
 

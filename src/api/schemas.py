@@ -138,3 +138,63 @@ class ErrorResponse(BaseModel):
             }
         }
     }
+
+
+class PHIEntityResponse(BaseModel):
+    """Response model for a single PHI entity."""
+    text: Optional[str] = Field(None, description="Actual PHI text (only if include_text=true)")
+    category: str = Field(..., description="Entity category (Person, Date, Phone, etc.)")
+    page: int = Field(..., description="Page number (1-indexed)")
+    confidence: float = Field(..., description="Detection confidence (0.0-1.0)")
+    offset: int = Field(..., description="Character offset in original text")
+    length: int = Field(..., description="Length of entity text")
+    bbox_x: float = Field(..., description="Bounding box X coordinate")
+    bbox_y: float = Field(..., description="Bounding box Y coordinate")
+    bbox_width: float = Field(..., description="Bounding box width")
+    bbox_height: float = Field(..., description="Bounding box height")
+    
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "text": "John Doe",
+                "category": "Person",
+                "page": 1,
+                "confidence": 0.95,
+                "offset": 120,
+                "length": 8,
+                "bbox_x": 150.5,
+                "bbox_y": 200.3,
+                "bbox_width": 80.2,
+                "bbox_height": 12.1
+            }
+        }
+    }
+
+
+class PHIEntitiesResponse(BaseModel):
+    """Response for PHI entities list."""
+    job_id: str
+    total_entities: int = Field(..., description="Total number of entities detected")
+    entities: List[PHIEntityResponse]
+    
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "job_id": "123e4567-e89b-12d3-a456-426614174000",
+                "total_entities": 2,
+                "entities": [
+                    {
+                        "category": "Person",
+                        "page": 1,
+                        "confidence": 0.95,
+                        "offset": 120,
+                        "length": 8,
+                        "bbox_x": 150.5,
+                        "bbox_y": 200.3,
+                        "bbox_width": 80.2,
+                        "bbox_height": 12.1
+                    }
+                ]
+            }
+        }
+    }

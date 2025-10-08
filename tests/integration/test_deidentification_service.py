@@ -10,8 +10,8 @@ import io
 from PIL import Image
 
 from src.services.deidentification_service import DeidentificationService
-from tests.mocks.mock_ocr_service import MockOCRService
-from tests.mocks.mock_phi_detection_service import MockPHIDetectionService
+from src.services.mock_ocr_service import MockOCRService
+from src.services.mock_phi_detection_service import MockPHIDetectionService
 from src.utils.tiff_processor import TIFFProcessor
 from src.models.domain import MaskingLevel
 from src.utils.document_processor import DocumentFormat

@@ -47,7 +47,7 @@ def create_ocr_service(
         return AWSTextractService(settings=aws_settings)
     elif provider == "mock":
         # Import here to avoid circular dependency
-        from tests.mocks.mock_ocr_service import MockOCRService
+        from src.services.mock_ocr_service import MockOCRService
         return MockOCRService()
     else:
         raise ValueError(f"Unknown OCR provider: {provider}")
@@ -86,7 +86,7 @@ def create_phi_service(
         return AWSComprehendMedicalService(settings=aws_settings)
     elif provider == "mock":
         # Import here to avoid circular dependency
-        from tests.mocks.mock_phi_detection_service import MockPHIDetectionService
+        from src.services.mock_phi_detection_service import MockPHIDetectionService
         return MockPHIDetectionService()
     else:
         raise ValueError(f"Unknown PHI provider: {provider}")

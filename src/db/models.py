@@ -1,7 +1,7 @@
-from sqlalchemy import String, Text, Integer, Float, DateTime, Enum
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy import String, Text, Integer, Float, DateTime, Enum, ForeignKey
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Optional, List
 import enum
 
 
@@ -50,3 +50,37 @@ class Job(Base):
     )
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    
+    # Relationship to PHI entities
+    phi_entities: Mapped[List["PHIEntity"]] = relationship(
+        "PHIEntity",
+        back_populates="job",
+        cascade="all, delete-orphan"
+    )
+
+
+class PHIEntity(Base):
+    """Database model for detected PHI entities."""
+    __tablename__ = "phi_entities"
+    
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    job_id: Mapped[str] = mapped_column(String(36), ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False)
+    
+    # Entity details
+    text: Mapped[str] = mapped_column(Text)  # Actual PHI text (SENSITIVE!)
+    category: Mapped[str] = mapped_column(String(64))  # Person, Date, Phone, etc.
+    page: Mapped[int] = mapped_column(Integer)  # Page number (1-indexed)
+    confidence: Mapped[float] = mapped_column(Float)  # Detection confidence (0.0-1.0)
+    
+    # Position information (character offsets in original text)
+    offset: Mapped[int] = mapped_column(Integer)
+    length: Mapped[int] = mapped_column(Integer)
+    
+    # Bounding box (pixel coordinates)
+    bbox_x: Mapped[float] = mapped_column(Float)
+    bbox_y: Mapped[float] = mapped_column(Float)
+    bbox_width: Mapped[float] = mapped_column(Float)
+    bbox_height: Mapped[float] = mapped_column(Float)
+    
+    # Relationship back to job
+    job: Mapped["Job"] = relationship("Job", back_populates="phi_entities")
