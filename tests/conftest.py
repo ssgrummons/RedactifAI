@@ -6,10 +6,15 @@ from PIL import Image
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.schema import CreateColumn
 from sqlalchemy.dialects.postgresql import TSVECTOR
+from sqlalchemy.orm import Session
+from unittest.mock import Mock, AsyncMock, patch
+from fastapi.testclient import TestClient
 
 
 from src.db.session import DatabaseSessionManager
 from src.db.models import Base
+from src.api import dependencies
+from src.api.main import app
 
 
 def pytest_configure(config):
@@ -85,3 +90,59 @@ async def async_db_manager():
     
     yield manager
     await manager.close()
+    
+@pytest.fixture
+def mock_db_session():
+    """Mock database session."""
+    return Mock(spec=Session)
+
+
+@pytest.fixture
+def mock_phi_storage():
+    """Mock PHI storage backend."""
+    storage = AsyncMock()
+    storage.upload = AsyncMock(return_value="input/test.tiff")
+    storage.download = AsyncMock(return_value=b"test data")
+    storage.delete = AsyncMock()
+    return storage
+
+
+@pytest.fixture
+def mock_clean_storage():
+    """Mock clean storage backend."""
+    storage = AsyncMock()
+    storage.download = AsyncMock(return_value=b"masked data")
+    return storage
+
+
+@pytest.fixture
+def mock_settings():
+    """Mock general settings."""
+    settings = Mock()
+    settings.MAX_FILE_SIZE_MB = 50
+    return settings
+
+
+@pytest.fixture
+def mock_provider_settings():
+    """Mock provider settings."""
+    settings = Mock()
+    settings.OCR_PROVIDER = "azure"
+    settings.PHI_PROVIDER = "azure"
+    return settings
+
+
+@pytest.fixture
+def client(mock_db_session, mock_phi_storage, mock_clean_storage, mock_settings, mock_provider_settings):
+    """FastAPI test client with all dependencies overridden."""
+    app.dependency_overrides[dependencies.get_db_session] = lambda: mock_db_session
+    app.dependency_overrides[dependencies.get_phi_storage] = lambda: mock_phi_storage
+    app.dependency_overrides[dependencies.get_clean_storage] = lambda: mock_clean_storage
+    app.dependency_overrides[dependencies.get_general_settings] = lambda: mock_settings
+    app.dependency_overrides[dependencies.get_provider_settings] = lambda: mock_provider_settings
+    app.dependency_overrides[dependencies.verify_authentication] = lambda: True
+    
+    with TestClient(app) as test_client:
+        yield test_client
+    
+    app.dependency_overrides.clear()
