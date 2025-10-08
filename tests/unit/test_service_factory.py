@@ -4,8 +4,8 @@ from src.services.azure_ocr_service import AzureOCRService
 from src.services.aws_textract_service import AWSTextractService
 from src.services.azure_phi_detection_service import AzurePHIDetectionService
 from src.services.aws_comprehend_medical_service import AWSComprehendMedicalService
-from tests.mocks.mock_ocr_service import MockOCRService
-from tests.mocks.mock_phi_detection_service import MockPHIDetectionService
+from src.services.mock_ocr_service import MockOCRService
+from src.services.mock_phi_detection_service import MockPHIDetectionService
 from src.config.azure_settings import AzureSettings
 from src.config.aws_settings import AWSSettings
 
