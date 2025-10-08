@@ -26,6 +26,7 @@ class TestGetPHIEntities:
         mock_entity1 = Mock()
         mock_entity1.text = "John Doe"
         mock_entity1.category = "Person"
+        mock_entity1.subcategory = "Name"
         mock_entity1.page = 1
         mock_entity1.confidence = 0.95
         mock_entity1.offset = 120
@@ -38,6 +39,7 @@ class TestGetPHIEntities:
         mock_entity2 = Mock()
         mock_entity2.text = "555-1234"
         mock_entity2.category = "Phone"
+        mock_entity2.subcategory = "Number"
         mock_entity2.page = 1
         mock_entity2.confidence = 0.89
         mock_entity2.offset = 200
@@ -89,6 +91,7 @@ class TestGetPHIEntities:
         mock_entity = Mock()
         mock_entity.text = "John Doe"
         mock_entity.category = "Person"
+        mock_entity.subcategory = "Name"
         mock_entity.page = 1
         mock_entity.confidence = 0.95
         mock_entity.offset = 120
@@ -188,6 +191,7 @@ class TestGetPHIEntities:
         mock_entity_page1 = Mock()
         mock_entity_page1.text = "Entity 1"
         mock_entity_page1.category = "Person"
+        mock_entity_page1.subcategory = "Name"
         mock_entity_page1.page = 1
         mock_entity_page1.confidence = 0.95
         mock_entity_page1.offset = 100
@@ -200,6 +204,7 @@ class TestGetPHIEntities:
         mock_entity_page2 = Mock()
         mock_entity_page2.text = "Entity 2"
         mock_entity_page2.category = "Date"
+        mock_entity_page2.subcategory = "DOB"
         mock_entity_page2.page = 2
         mock_entity_page2.confidence = 0.90
         mock_entity_page2.offset = 200
@@ -245,6 +250,7 @@ class TestGetPHIEntities:
             entity = Mock()
             entity.text = f"Test {category}"
             entity.category = category
+            entity.subcategory = "SUBCATEGORY"
             entity.page = 1
             entity.confidence = 0.90 + (i * 0.01)
             entity.offset = i * 100

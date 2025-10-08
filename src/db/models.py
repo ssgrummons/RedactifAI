@@ -69,6 +69,7 @@ class PHIEntity(Base):
     # Entity details
     text: Mapped[str] = mapped_column(Text)  # Actual PHI text (SENSITIVE!)
     category: Mapped[str] = mapped_column(String(64))  # Person, Date, Phone, etc.
+    subcategory: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     page: Mapped[int] = mapped_column(Integer)  # Page number (1-indexed)
     confidence: Mapped[float] = mapped_column(Float)  # Detection confidence (0.0-1.0)
     

@@ -164,6 +164,7 @@ def deidentify_document_task(
                     job_id=job_id,
                     text=entity.text,
                     category=entity.category,
+                    subcategory=entity.subcategory, 
                     page=mask_region.page if mask_region else 1,
                     confidence=entity.confidence,
                     offset=entity.offset,

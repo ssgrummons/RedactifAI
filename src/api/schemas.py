@@ -144,6 +144,7 @@ class PHIEntityResponse(BaseModel):
     """Response model for a single PHI entity."""
     text: Optional[str] = Field(None, description="Actual PHI text (only if include_text=true)")
     category: str = Field(..., description="Entity category (Person, Date, Phone, etc.)")
+    subcategory: Optional[str] = Field(None, description="Subcategory (e.g., NAME, AGE)") 
     page: int = Field(..., description="Page number (1-indexed)")
     confidence: float = Field(..., description="Detection confidence (0.0-1.0)")
     offset: int = Field(..., description="Character offset in original text")

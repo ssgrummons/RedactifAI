@@ -372,6 +372,7 @@ async def get_phi_entities(
         PHIEntityResponse(
             text=entity.text if include_text else None,
             category=entity.category,
+            subcategory=entity.subcategory, 
             page=entity.page,
             confidence=entity.confidence,
             offset=entity.offset,
