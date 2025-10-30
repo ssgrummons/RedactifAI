@@ -6,7 +6,7 @@ class StorageBackend(ABC):
     """Abstract base class for storage backends."""
     
     @abstractmethod
-    async def upload(self, key: str, data: bytes, content_type: str = "image/tiff") -> str:
+    def upload(self, key: str, data: bytes, content_type: str = "image/tiff") -> str:
         """
         Upload data to storage.
         
@@ -21,7 +21,7 @@ class StorageBackend(ABC):
         pass
     
     @abstractmethod
-    async def download(self, key: str) -> bytes:
+    def download(self, key: str) -> bytes:
         """
         Download data from storage.
         
@@ -37,11 +37,11 @@ class StorageBackend(ABC):
         pass
     
     @abstractmethod
-    async def exists(self, key: str) -> bool:
+    def exists(self, key: str) -> bool:
         """Check if key exists in storage."""
         pass
     
     @abstractmethod
-    async def delete(self, key: str) -> None:
+    def delete(self, key: str) -> None:
         """Delete key from storage."""
         pass

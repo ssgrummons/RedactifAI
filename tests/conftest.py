@@ -100,18 +100,18 @@ def mock_db_session():
 @pytest.fixture
 def mock_phi_storage():
     """Mock PHI storage backend."""
-    storage = AsyncMock()
-    storage.upload = AsyncMock(return_value="input/test.tiff")
-    storage.download = AsyncMock(return_value=b"test data")
-    storage.delete = AsyncMock()
+    storage = Mock()
+    storage.upload = Mock(return_value="input/test.tiff")
+    storage.download = Mock(return_value=b"test data")
+    storage.delete = Mock()
     return storage
 
 
 @pytest.fixture
 def mock_clean_storage():
     """Mock clean storage backend."""
-    storage = AsyncMock()
-    storage.download = AsyncMock(return_value=b"masked data")
+    storage = Mock()
+    storage.download = Mock(return_value=b"masked data")
     return storage
 
 

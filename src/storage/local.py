@@ -1,8 +1,5 @@
-import aiofiles
-import aiofiles.os
 from pathlib import Path
 from .base import StorageBackend
-
 
 
 class LocalStorageBackend(StorageBackend):
@@ -19,33 +16,33 @@ class LocalStorageBackend(StorageBackend):
         full_path.resolve().relative_to(self.base_path.resolve())
         return full_path
     
-    async def upload(self, key: str, data: bytes, content_type: str = "image/tiff") -> str:
+    def upload(self, key: str, data: bytes, content_type: str = "image/tiff") -> str:
         """Upload data to local filesystem."""
         full_path = self._get_full_path(key)
         full_path.parent.mkdir(parents=True, exist_ok=True)
         
-        async with aiofiles.open(full_path, 'wb') as f:
-            await f.write(data)
+        with open(full_path, 'wb') as f:
+            f.write(data)
         
         return key
     
-    async def download(self, key: str) -> bytes:
+    def download(self, key: str) -> bytes:
         """Download data from local filesystem."""
         full_path = self._get_full_path(key)
         
         if not full_path.exists():
             raise FileNotFoundError(f"Key not found: {key}")
         
-        async with aiofiles.open(full_path, 'rb') as f:
-            return await f.read()
+        with open(full_path, 'rb') as f:
+            return f.read()
     
-    async def exists(self, key: str) -> bool:
+    def exists(self, key: str) -> bool:
         """Check if key exists in local filesystem."""
         full_path = self._get_full_path(key)
-        return await aiofiles.os.path.exists(full_path)
+        return full_path.exists()
     
-    async def delete(self, key: str) -> None:
+    def delete(self, key: str) -> None:
         """Delete key from local filesystem."""
         full_path = self._get_full_path(key)
         if full_path.exists():
-            await aiofiles.os.remove(full_path)
+            full_path.unlink()

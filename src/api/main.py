@@ -2,6 +2,7 @@
 
 import uuid
 import logging
+import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Optional
@@ -122,7 +123,7 @@ async def create_job(
     # Upload to PHI storage
     input_key = f"input/{job_id}.tiff"
     try:
-        await phi_storage.upload(
+        phi_storage.upload(
             key=input_key,
             data=file_bytes,
             content_type=file.content_type
@@ -148,7 +149,7 @@ async def create_job(
         logger.error(f"Failed to create job record: {e}")
         # Clean up uploaded file
         try:
-            await phi_storage.delete(input_key)
+            phi_storage.delete(input_key)
         except:
             pass
         raise HTTPException(500, "Failed to create job")
@@ -304,7 +305,7 @@ async def download_result(
     
     # Download from clean storage
     try:
-        document_bytes = await clean_storage.download(job.output_key)
+        document_bytes = clean_storage.download(job.output_key)
     except FileNotFoundError:
         logger.error(f"Output file not found for job {job_id}: {job.output_key}")
         raise HTTPException(500, "Output file not found in storage")
