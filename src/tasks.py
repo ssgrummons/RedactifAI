@@ -12,6 +12,7 @@ from src.config.database import DatabaseSettings
 from src.config.provider import ProviderSettings
 from src.db.session import DatabaseSessionManager
 from src.db.models import Job, JobStatus, PHIEntity
+from src.models.domain import DeidentificationResult
 from src.storage.factory import create_storage_backend
 from src.services.service_factory import create_ocr_service, create_phi_service
 from src.services.deidentification_service import DeidentificationService
@@ -74,7 +75,8 @@ def deidentify_document_task(
         job_id: UUID of the job in database
         input_key: Storage key for input document (PHI bucket)
         masking_level: "safe_harbor", "limited_dataset", or "custom"
-        provider: "azure", "aws", or "mock"
+        ocr_provider: "azure", "aws", or "mock"
+        phi_provider: "azure", "aws", or "mock"
     
     Process:
         1. Update job status to PROCESSING
@@ -114,7 +116,7 @@ def deidentify_document_task(
         
         # Download document from PHI storage
         logger.info(f"Job {job_id}: Downloading from PHI storage: {input_key}")
-        document_bytes = asyncio.run(phi_storage.download(input_key))
+        document_bytes = phi_storage.download(input_key)
         
         # Run async deidentification pipeline
         logger.info(f"Job {job_id}: Running deidentification pipeline")
@@ -125,21 +127,27 @@ def deidentify_document_task(
             phi_provider=phi_provider
         ))
         
+        if not isinstance(result, DeidentificationResult):
+            raise RuntimeError(
+                f"Pipeline returned unexpected type {type(result).__name__}, "
+                f"expected DeidentificationResult"
+            )
+
         if result.status != "success":
             raise RuntimeError(f"Deidentification failed: {result.errors}")
         
         # Upload to clean storage
         output_key = f"masked/{job_id}.tiff"
         logger.info(f"Job {job_id}: Uploading to clean storage: {output_key}")
-        asyncio.run(clean_storage.upload(
+        clean_storage.upload(
             key=output_key,
             data=result.masked_image_bytes,
             content_type="image/tiff"
-        ))
+        )
         
         # Delete from PHI storage
         logger.info(f"Job {job_id}: Deleting from PHI storage: {input_key}")
-        asyncio.run(phi_storage.delete(input_key))
+        phi_storage.delete(input_key)
         
         # Update job status to COMPLETE
         with db_manager.get_sync_session() as session:
@@ -197,10 +205,11 @@ def deidentify_document_task(
         logger.error(f"Job {job_id}: Max retries exceeded")
         with db_manager.get_sync_session() as session:
             job = session.get(Job, job_id)
-            job.status = JobStatus.FAILED
-            job.error_message = f"Max retries ({celery_settings.CELERY_TASK_MAX_RETRIES}) exceeded"
-            job.completed_at = datetime.now(timezone.utc)
-            session.commit()
+            if job:
+                job.status = JobStatus.FAILED
+                job.error_message = f"Max retries ({celery_settings.CELERY_TASK_MAX_RETRIES}) exceeded"
+                job.completed_at = datetime.now(timezone.utc)
+                session.commit()
         raise
         
     except Exception as e:
@@ -208,7 +217,7 @@ def deidentify_document_task(
         
         with db_manager.get_sync_session() as session:
             job = session.get(Job, job_id)
-            if job:  # <-- Add this null check
+            if job:
                 job.retry_count = self.request.retries + 1
                 
                 # If this will be the last retry, mark as FAILED
@@ -238,7 +247,8 @@ async def _run_deidentification_pipeline(
     Args:
         document_bytes: Input document bytes
         masking_level: Masking level string
-        provider: Provider string
+        ocr_provider: Provider string for OCR
+        phi_provider: Provider string for PHI detection
         
     Returns:
         DeidentificationResult

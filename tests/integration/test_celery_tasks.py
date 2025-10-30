@@ -42,7 +42,7 @@ class TestCeleryTaskIntegration:
         
         # Upload document to PHI storage
         phi_storage = LocalStorageBackend(base_path=phi_dir)
-        asyncio.run(phi_storage.upload(input_key, sample_tiff_bytes, "image/tiff"))
+        phi_storage.upload(input_key, sample_tiff_bytes, "image/tiff")
         
         # Patch storage factory to use our temp directories
         from unittest.mock import patch
@@ -91,11 +91,11 @@ class TestCeleryTaskIntegration:
         
         # Verify masked document exists in clean storage
         clean_storage = LocalStorageBackend(base_path=clean_dir)
-        asyncio.run(clean_storage.exists(result["output_key"]))
+        assert clean_storage.exists(result["output_key"])
         
         # Verify original was deleted from PHI storage
-        assert not asyncio.run(phi_storage.exists(input_key))
-    
+        assert not phi_storage.exists(input_key)
+        
     @pytest.mark.asyncio
     async def test_pipeline_execution_with_mock_services(self, sample_tiff_bytes):
         """Test pipeline helper function with mock services."""
@@ -169,12 +169,12 @@ class TestCeleryTaskIntegration:
         
         # Upload to PHI
         phi_storage = LocalStorageBackend(base_path=phi_dir)
-        asyncio.run(phi_storage.upload(input_key, sample_tiff_bytes, "image/tiff"))
+        phi_storage.upload(input_key, sample_tiff_bytes, "image/tiff")
         
         # Verify file is only in PHI, not in clean
         clean_storage = LocalStorageBackend(base_path=clean_dir)
-        assert asyncio.run(phi_storage.exists(input_key))
-        assert not asyncio.run(clean_storage.exists(input_key))
+        assert phi_storage.exists(input_key)
+        assert not clean_storage.exists(input_key)
         
         # Run task
         from unittest.mock import patch
@@ -201,8 +201,8 @@ class TestCeleryTaskIntegration:
         
         # Verify output is only in clean, not in PHI
         output_key = result["output_key"]
-        assert asyncio.run(clean_storage.exists(output_key))
-        assert not asyncio.run(phi_storage.exists(output_key))
+        assert clean_storage.exists(output_key)
+        assert not phi_storage.exists(output_key)
         
         # Verify input was deleted from PHI
-        assert not asyncio.run(phi_storage.exists(input_key))
+        assert not phi_storage.exists(input_key)

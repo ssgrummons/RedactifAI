@@ -137,9 +137,8 @@ class TestAPIIntegration:
             session.commit()
         
         # Upload mock output to clean storage
-        import asyncio
         clean_storage = LocalStorageBackend(base_path=clean_dir)
-        asyncio.run(clean_storage.upload(output_key, sample_tiff_bytes, "image/tiff"))
+        clean_storage.upload(output_key, sample_tiff_bytes, "image/tiff")
         
         # Download
         response = client.get(f"/api/v1/jobs/{job_id}/download")

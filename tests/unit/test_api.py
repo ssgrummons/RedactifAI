@@ -3,7 +3,7 @@
 import pytest
 import uuid
 from datetime import datetime, timezone
-from unittest.mock import Mock, AsyncMock, patch
+from unittest.mock import Mock, patch
 from io import BytesIO
 
 from fastapi.testclient import TestClient
@@ -54,7 +54,7 @@ class TestCreateJob:
         mock_job = Mock()
         mock_job.id = job_id
         mock_job.status = JobStatus.PENDING
-        mock_job.created_at = datetime.now(timezone.utc)  # Already here
+        mock_job.created_at = datetime.now(timezone.utc)
         
         mock_db_session.add = Mock()
         mock_db_session.commit = Mock()
@@ -111,7 +111,7 @@ class TestCreateJob:
     
     def test_create_job_storage_failure(self, client, mock_phi_storage):
         """Test handling of storage upload failure."""
-        mock_phi_storage.upload = AsyncMock(side_effect=Exception("Storage error"))
+        mock_phi_storage.upload = Mock(side_effect=Exception("Storage error"))
         
         response = client.post(
             "/api/v1/jobs",
@@ -259,7 +259,7 @@ class TestDownloadResult:
     def test_download_file_not_found(self, client, mock_db_session, mock_clean_storage, sample_job):
         """Test 500 when output file doesn't exist in storage."""
         mock_db_session.get = Mock(return_value=sample_job)
-        mock_clean_storage.download = AsyncMock(side_effect=FileNotFoundError())
+        mock_clean_storage.download = Mock(side_effect=FileNotFoundError())
         
         response = client.get(f"/api/v1/jobs/{sample_job.id}/download")
         

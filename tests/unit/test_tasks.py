@@ -74,33 +74,25 @@ class TestDeidentificationTaskUnit:
         mock_db_manager = Mock()
         mock_db_manager.get_sync_session.return_value = mock_session
         
-        # Mock storage backends
+        # Mock storage backends with sync methods
         mock_phi_storage = Mock()
+        mock_phi_storage.download.return_value = sample_tiff_bytes
+        mock_phi_storage.delete.return_value = None
+        
         mock_clean_storage = Mock()
+        mock_clean_storage.upload.return_value = None
         
         with patch('src.tasks.DatabaseSessionManager', return_value=mock_db_manager), \
-             patch('src.tasks.create_storage_backend') as mock_storage_factory, \
-             patch('src.tasks.asyncio.run') as mock_asyncio_run:
+            patch('src.tasks.create_storage_backend') as mock_storage_factory, \
+            patch('src.tasks.asyncio.run') as mock_asyncio_run:
             
             # Setup storage factory
-            def storage_factory_side_effect(bucket_type):
-                return mock_phi_storage if bucket_type == "phi" else mock_clean_storage
-            mock_storage_factory.side_effect = storage_factory_side_effect
+            mock_storage_factory.side_effect = lambda bt: (
+                mock_phi_storage if bt == "phi" else mock_clean_storage
+            )
             
-            # Setup asyncio.run to handle all async calls
-            def asyncio_run_side_effect(coro):
-                coro_str = str(coro)
-                if 'download' in coro_str:
-                    return sample_tiff_bytes
-                elif '_run_deidentification_pipeline' in coro_str:
-                    return mock_deidentification_result
-                elif 'upload' in coro_str:
-                    return f"masked/{job_id}.tiff"
-                elif 'delete' in coro_str:
-                    return None
-                return None
-            
-            mock_asyncio_run.side_effect = asyncio_run_side_effect
+            # asyncio.run is only for the pipeline now
+            mock_asyncio_run.return_value = mock_deidentification_result
             
             # Execute task
             result = deidentify_document_task(
@@ -170,23 +162,22 @@ class TestDeidentificationTaskUnit:
         mock_db_manager.get_sync_session.return_value = mock_session
         
         mock_phi_storage = Mock()
+        mock_phi_storage.download.return_value = sample_tiff_bytes  # <-- Mock the sync method
+        mock_phi_storage.delete.return_value = None  # <-- Mock the sync method
+        
         mock_clean_storage = Mock()
+        mock_clean_storage.upload.return_value = None  # <-- Mock the sync method
         
         with patch('src.tasks.DatabaseSessionManager', return_value=mock_db_manager), \
-             patch('src.tasks.create_storage_backend') as mock_storage_factory, \
-             patch('src.tasks.asyncio.run') as mock_asyncio_run:
+            patch('src.tasks.create_storage_backend') as mock_storage_factory, \
+            patch('src.tasks.asyncio.run') as mock_asyncio_run:
             
             mock_storage_factory.side_effect = lambda bt: (
                 mock_phi_storage if bt == "phi" else mock_clean_storage
             )
             
-            # Setup successful flow
-            mock_asyncio_run.side_effect = [
-                sample_tiff_bytes,  # download
-                mock_deidentification_result,  # pipeline
-                None,  # upload
-                None,  # delete
-            ]
+            # asyncio.run is now ONLY called once, for the pipeline
+            mock_asyncio_run.return_value = mock_deidentification_result
             
             result = deidentify_document_task(
                 job_id=job_id,
@@ -196,9 +187,14 @@ class TestDeidentificationTaskUnit:
                 phi_provider="mock"
             )
             
-            # Verify asyncio.run was called 4 times (including delete)
-            assert mock_asyncio_run.call_count == 4
+            # Verify asyncio.run was called exactly once (just for pipeline)
+            assert mock_asyncio_run.call_count == 1
             assert result["status"] == "success"
+            
+            # Verify storage methods were called
+            mock_phi_storage.download.assert_called_once_with(input_key)
+            mock_clean_storage.upload.assert_called_once()
+            mock_phi_storage.delete.assert_called_once_with(input_key)
 
 
 class TestCeleryConfiguration:
