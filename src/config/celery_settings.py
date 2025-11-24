@@ -15,7 +15,7 @@ class CelerySettings(BaseSettings):
     REDIS_RESULT_DB: int = 0  # Same as broker by default
     
     # Service identity for key prefixing
-    SERVICE_NAME: str = "orchestrator"
+    SERVICE_NAME: str = "redactifai"
     
     # Task configuration
     CELERY_TASK_TIME_LIMIT: int = 3600
