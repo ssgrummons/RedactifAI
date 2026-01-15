@@ -7,8 +7,12 @@ metadata preservation.
 
 import io
 import logging
+import os
+import tempfile
 from typing import List, Optional
 from PIL import Image
+import numpy as np
+import tifffile
 
 from src.utils.document_processor import (
     DocumentProcessor,
@@ -30,7 +34,11 @@ class TIFFProcessor(DocumentProcessor):
     - DPI preservation
     - Lossless compression (LZW)
     - Memory-efficient page iteration
+    - Streaming save for large documents (via tifffile)
     """
+    
+    # Use tifffile for documents larger than this
+    STREAMING_THRESHOLD = 50
     
     async def load_document(
         self,
@@ -91,6 +99,9 @@ class TIFFProcessor(DocumentProcessor):
         """
         Save images as TIFF document.
         
+        For large documents (>STREAMING_THRESHOLD pages), uses tifffile
+        for streaming save to avoid memory issues.
+        
         Args:
             images: Page images
             metadata: Document metadata to preserve
@@ -107,6 +118,23 @@ class TIFFProcessor(DocumentProcessor):
         if not images:
             raise DocumentProcessorError("Cannot save empty document")
         
+        # For small documents, use simple Pillow save
+        if len(images) <= self.STREAMING_THRESHOLD:
+            return await self._save_with_pillow(images, metadata)
+        
+        # For large documents, use tifffile streaming save
+        return await self._save_with_tifffile(images, metadata)
+    
+    async def _save_with_pillow(
+        self,
+        images: List[Image.Image],
+        metadata: DocumentMetadata,
+    ) -> bytes:
+        """
+        Simple save for small documents using Pillow (≤ 50 pages).
+        
+        Uses Pillow's built-in multi-page save.
+        """
         try:
             output = io.BytesIO()
             
@@ -139,15 +167,87 @@ class TIFFProcessor(DocumentProcessor):
             tiff_bytes = output.getvalue()
             
             logger.info(
-                f"Saved TIFF: {len(images)} pages, "
+                f"Saved TIFF (Pillow): {len(images)} pages, "
                 f"size={len(tiff_bytes) / 1024 / 1024:.2f}MB"
             )
             
             return tiff_bytes
             
         except Exception as e:
-            logger.error(f"Failed to save TIFF: {e}")
+            logger.error(f"Failed to save TIFF with Pillow: {e}")
             raise DocumentProcessorError(f"TIFF saving failed: {e}") from e
+    
+    async def _save_with_tifffile(
+        self,
+        images: List[Image.Image],
+        metadata: DocumentMetadata,
+    ) -> bytes:
+        """
+        Streaming save for large documents using tifffile library.
+        
+        Writes pages one at a time without loading entire document into memory.
+        This prevents CPU/memory exhaustion on large documents.
+        """
+        try:
+            logger.info(
+                f"Saving large TIFF ({len(images)} pages) with tifffile "
+                f"(streaming mode)"
+            )
+            
+            # Create temporary file for writing
+            with tempfile.NamedTemporaryFile(suffix='.tif', delete=False) as tmp:
+                tmp_path = tmp.name
+            
+            try:
+                # Determine resolution
+                if metadata.dpi:
+                    if isinstance(metadata.dpi, tuple):
+                        resolution = metadata.dpi
+                    else:
+                        resolution = (metadata.dpi, metadata.dpi)
+                else:
+                    resolution = (300, 300)  # Default 300 DPI
+                
+                # Write pages one at a time
+                with tifffile.TiffWriter(tmp_path, bigtiff=True) as tif:
+                    for i, img in enumerate(images):
+                        # Log progress for large documents
+                        if i % 50 == 0 or i == len(images) - 1:
+                            logger.info(f"  Writing page {i + 1}/{len(images)}")
+                        
+                        # Convert PIL Image to numpy array
+                        img_array = np.array(img)
+                        
+                        # Write page with compression
+                        tif.write(
+                            img_array,
+                            compression='lzw',
+                            resolution=resolution,
+                            resolutionunit='INCH',
+                        )
+                
+                # Read final file into memory
+                with open(tmp_path, 'rb') as f:
+                    tiff_bytes = f.read()
+                
+                logger.info(
+                    f"Saved TIFF (tifffile): {len(images)} pages, "
+                    f"size={len(tiff_bytes) / 1024 / 1024:.2f}MB"
+                )
+                
+                return tiff_bytes
+                
+            finally:
+                # Clean up temp file
+                if os.path.exists(tmp_path):
+                    try:
+                        os.unlink(tmp_path)
+                    except Exception as e:
+                        logger.warning(f"Failed to delete temp file {tmp_path}: {e}")
+                        
+        except Exception as e:
+            logger.error(f"Failed to save TIFF with tifffile: {e}")
+            raise DocumentProcessorError(f"TIFF streaming save failed: {e}") from e
     
     async def _apply_compression(
         self,
@@ -163,6 +263,24 @@ class TIFFProcessor(DocumentProcessor):
             
         Returns:
             Compressed TIFF bytes
+        """
+        # Use the appropriate save method based on size
+        if len(images) <= self.STREAMING_THRESHOLD:
+            return await self._apply_compression_pillow(images, compression)
+        else:
+            # tifffile always uses LZW, so just use regular save
+            return await self._save_with_tifffile(
+                images,
+                DocumentMetadata(format=DocumentFormat.TIFF)
+            )
+    
+    async def _apply_compression_pillow(
+        self,
+        images: List[Image.Image],
+        compression: CompressionLevel,
+    ) -> bytes:
+        """
+        Apply compression using Pillow (for small documents).
         """
         output = io.BytesIO()
         
