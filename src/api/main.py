@@ -3,6 +3,8 @@
 import uuid
 import logging
 import asyncio
+import os
+import sys
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Optional
@@ -38,6 +40,13 @@ from src.storage.base import StorageBackend
 from src.config.settings import Settings
 from src.config.provider import ProviderSettings
 from src.tasks import deidentify_document_task
+
+log_level = os.getenv("LOG_LEVEL", "INFO").upper()
+
+logging.basicConfig(
+    level=getattr(logging, log_level, logging.INFO),
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
 
 logger = logging.getLogger(__name__)
 

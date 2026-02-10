@@ -44,7 +44,9 @@ class DatabaseSessionManager:
         self.async_engine = create_async_engine(
             self.async_database_url, 
             echo=echo,
-            future=True
+            future=True,
+            pool_pre_ping=True,
+            pool_recycle=3600
         )
         self.async_session_factory = async_sessionmaker(
             bind=self.async_engine,
@@ -56,7 +58,9 @@ class DatabaseSessionManager:
         self.sync_engine = create_engine(
             self.sync_database_url,
             echo=echo,
-            future=True
+            future=True,
+            pool_pre_ping=True,
+            pool_recycle=3600
         )
         self.sync_session_factory = sessionmaker(
             bind=self.sync_engine,

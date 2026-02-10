@@ -21,6 +21,14 @@ FROM python:3.12-slim
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     curl \
+    ca-certificates \
+    libpq-dev \
+    gcc \
+    g++ \
+    libjpeg-dev \
+    zlib1g-dev \
+    libtiff-dev \
+    libwebp-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -42,4 +50,4 @@ USER appuser
 ENV PATH="/app/.venv/bin:$PATH"
 
 # Run Celery worker
-CMD ["celery", "-A", "src.tasks", "worker", "--loglevel=info", "--concurrency=2"]
+CMD ["/bin/sh", "-c", "celery -A src.tasks worker --loglevel=$LOG_LEVEL --concurrency=2 --without-mingle --without-gossip"]

@@ -242,7 +242,7 @@ class DeidentificationResult:
     
     def __post_init__(self):
         """Validate result."""
-        if self.status not in ("success", "failure"):
+        if self.status not in ("success", "failure", "partial_success"):
             raise ValueError(f"Status must be 'success' or 'failure', got {self.status}")
         if self.pages_processed < 0:
             raise ValueError(f"Pages processed must be >= 0")
