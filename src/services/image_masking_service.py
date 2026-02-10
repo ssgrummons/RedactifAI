@@ -51,6 +51,8 @@ class ImageMaskingService:
         """
         Apply mask regions to images.
         
+        Processes sequentially for stability with large documents.
+        
         Args:
             images: List of PIL Images (one per page)
             mask_regions: List of mask regions to apply
@@ -65,23 +67,25 @@ class ImageMaskingService:
             logger.info("No mask regions to apply")
             return [img.copy() for img in images]
         
+        logger.info(f"Applying {len(mask_regions)} masks to {len(images)} pages (sequential)")
+        
         # Convert all images to RGB for consistent color handling
-        # Grayscale images will maintain their grayscale appearance
         images = [img.convert('RGB') if img.mode != 'RGB' else img for img in images]
         
         # Group mask regions by page
         regions_by_page = self._group_by_page(mask_regions)
         
-        # Mask each page
+        # Mask each page sequentially
         masked_images = []
         for page_num, img in enumerate(images, start=1):
             page_regions = regions_by_page.get(page_num, [])
             
             if page_regions:
                 masked_img = self._mask_page(img, page_regions)
-                logger.info(
-                    f"Masked page {page_num}: {len(page_regions)} regions"
-                )
+                
+                # Log progress for large documents
+                if len(images) > 50 and page_num % 50 == 0:
+                    logger.info(f"  Masked {page_num}/{len(images)} pages")
             else:
                 # No masks for this page, just copy
                 masked_img = img.copy()

@@ -103,17 +103,15 @@ class EntityMatcher:
                     f"(confidence={entity.confidence:.2f})"
                 )
                 continue
-            
-            logger.info(
+            logger.debug(
                 f"Entity '{entity.text}' at offset {entity.offset}-{entity.end_offset}, "
                 f"searching in text of length {len(ocr_result.full_text)}"
             )
-            
             # Find OCR words that overlap with this entity
             overlapping_words = self._find_overlapping_words(
                 entity, offset_map, ocr_result.full_text
             )
-            logger.info(f"Found {len(overlapping_words)} overlapping words")
+            
             if overlapping_words:
                 # Group by page (entity might span multiple pages)
                 words_by_page = self._group_by_page(overlapping_words)
@@ -321,9 +319,17 @@ class EntityMatcher:
         
         This is a last-resort when exact offset matching fails. We search for
         the entity text itself in the OCR words.
+        
+        Args:
+            entity: PHI entity we're trying to locate
+            offset_map: Word offset mappings
+            full_text: Original full text
+            
+        Returns:
+            List of WordOffset objects that might contain the entity
         """
         entity_text = entity.text.strip().lower()
-        
+
         # Don't use fuzzy search for very short entities - too many false positives
         if len(entity_text) < 3:
             logger.debug(f"Skipping fuzzy search for short entity '{entity.text}'")
@@ -358,7 +364,7 @@ class EntityMatcher:
             # If we matched all entity words, add this sequence
             if len(matched_words) == len(entity_words):
                 candidates.extend(matched_words)
-                logger.info(
+                logger.debug(
                     f"Fuzzy search found entity '{entity.text}' at offset {offset_map[i].start_offset}"
                 )
                 break  # Found it, don't keep searching

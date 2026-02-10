@@ -23,30 +23,24 @@ from src.models.domain import MaskingLevel
 
 logger = logging.getLogger(__name__)
 
-# Load settings
-celery_settings = CelerySettings()
 db_settings = DatabaseSettings()
 provider_settings = ProviderSettings()
 
-# Initialize Celery app
-celery_app = Celery('redactifai')
+app_name = 'redactifai'
+celery_settings = CelerySettings()
 
-celery_app.conf.update(
-    broker_url=celery_settings.CELERY_BROKER_URL,
-    result_backend=celery_settings.CELERY_RESULT_BACKEND,
-    task_serializer='json',
-    result_serializer='json',
-    accept_content=['json'],
-    timezone='UTC',
-    enable_utc=True,
-    task_track_started=True,
-    task_time_limit=celery_settings.CELERY_TASK_TIME_LIMIT,
-    task_soft_time_limit=celery_settings.CELERY_TASK_SOFT_TIME_LIMIT,
-    task_acks_late=True,  # Acknowledge after task completes, not before
-    worker_prefetch_multiplier=1,  # Process one task at a time per worker
-    task_always_eager=celery_settings.CELERY_TASK_ALWAYS_EAGER,  # For testing
-)
+def create_celery_app(name: str):
+    app = Celery(name)
+    app.conf.broker_transport_options = {
+        'global_keyprefix' : f'{name}:broker:'
+    }
+    app.conf.result_backend_transport_options = {
+        'global_keyprefix' : f'{name}:result:'
+    }
+    app.config_from_object(celery_settings, namespace="CELERY")
+    return app
 
+celery_app = create_celery_app('redactifai')
 
 @celery_app.task(
     bind=True,
@@ -133,7 +127,7 @@ def deidentify_document_task(
                 f"expected DeidentificationResult"
             )
 
-        if result.status != "success":
+        if result.status == "failure":
             raise RuntimeError(f"Deidentification failed: {result.errors}")
         
         # Upload to clean storage
